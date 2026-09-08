@@ -95,8 +95,10 @@ You can also generate a fresh empty template from `test.csv`:
 ```
 
 The result is a receipt: whether the submission was accepted, its submission ID, the
-timestamp, and a link to the leaderboard. Scores and ranks are only on the leaderboard
-itself, never in the CLI response.
+timestamp, a link to the leaderboard, and the submitted attempt's four-decimal public
+score. This is the same score format shown on the leaderboard and is returned even when
+the attempt does not improve your team's best score. Rank remains on the leaderboard;
+detailed score diagnostics remain hidden.
 
 Submissions close when the countdown on the leaderboard page reaches zero. After that the
 CLI reports `the competition timer has ended and submissions are closed`.
