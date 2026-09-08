@@ -69,7 +69,14 @@ submission's header and IDs intact.
 Validate the file before submitting:
 
 ```bash
-./forecasting-participant-cli validate predictions.csv \
+./forecasting-participant-cli validate predictions.csv
+```
+
+Run from this folder and the CLI picks up `data/sample_submission.csv` on its own. If your
+predictions live somewhere else, point at the sample explicitly:
+
+```bash
+./forecasting-participant-cli validate /path/to/predictions.csv \
   --sample-submission data/sample_submission.csv
 ```
 
@@ -84,11 +91,15 @@ You can also generate a fresh empty template from `test.csv`:
 ## 4. Submit
 
 ```bash
-./forecasting-participant-cli submit predictions.csv \
-  --sample-submission data/sample_submission.csv
+./forecasting-participant-cli submit predictions.csv
 ```
 
-The result includes your score, rank, and a link to the leaderboard.
+The result is a receipt: whether the submission was accepted, its submission ID, the
+timestamp, and a link to the leaderboard. Scores and ranks are only on the leaderboard
+itself, never in the CLI response.
+
+Submissions close when the countdown on the leaderboard page reaches zero. After that the
+CLI reports `the competition timer has ended and submissions are closed`.
 
 For help with any command:
 
