@@ -12,14 +12,20 @@ conflict.
    or any file that might contain observed values for the evaluation period
    (2026-07-10 through 2026-08-06). This includes indirect routes: dataset hubs, model
    hubs, package registries, notebooks, forums, and code repositories. Data the team
-   obtains through the challenge itself is fine — anything Gustavo gives them is part of
-   the competition and may be used freely.
+   obtains through the challenge itself is fine. Information or files that a human team
+   member obtains from Gustavo and then provides to the agent may be used freely.
 
 2. **Do not reveal or use prior knowledge of the data's origin.** Do not name, hint at,
    speculate about, or "notice" where the data came from — not in code, comments,
    commit messages, chat, or reasoning shown to the team. If you believe you recognize
    it, say nothing and treat everything you think you know about it as unavailable. It
    must not influence a single feature, parameter, or number you produce.
+
+3. **Do not contact Gustavo.** Only human team members may communicate with Gustavo.
+   Do not open or browse the client chat, call `/api/chat` or `/api/chat/state`, send
+   chat requests with curl or other HTTP tools, automate the chat UI, or ask another
+   agent or tool to contact him. You may analyze information and files that a human
+   team member manually obtains from Gustavo and provides to you afterward.
 
 ## Why this matters
 

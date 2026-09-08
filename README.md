@@ -20,10 +20,7 @@ The forecast horizon is 28 days (four complete weeks). The training period ends 
 This folder contains the participant CLI and the data for the
 challenge.
 
-Challenge site:
-[https://uncertainworld.icyrock-216d2ab4.swedencentral.azurecontainerapps.io/chat](https://uncertainworld.icyrock-216d2ab4.swedencentral.azurecontainerapps.io/chat)
-
-Visit the site to talk with Gustavo. You will need him. 
+The organizers will share access to the client chat on Slack. Visit it to talk with Gustavo; you will need him.
 
 ## Rules
 
