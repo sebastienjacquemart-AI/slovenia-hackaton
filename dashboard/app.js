@@ -268,41 +268,112 @@ function scanExceptions() {
   return flags;
 }
 
-// ---------- Dropdowns & info panels ----------
+// ---------- Store/product pick lists & info panels ----------
 
-function storeLabel(id) {
-  const s = state.stores.get(id);
-  return `${id} · ${s.city} (${s.store_type}, cluster ${s.store_cluster})`;
-}
-function productLabel(id) {
-  const p = state.products.get(id);
-  return `${id} · ${p.product_family}${p.is_perishable === "1" ? " · perishable" : ""}`;
+let selectedStoreId = null;
+let selectedProductId = null;
+
+function sortedIds(map) {
+  return [...map.keys()].sort((a, b) => +a - +b);
 }
 
-function populateDropdowns() {
-  const storeSelect = document.getElementById("storeSelect");
-  const productSelect = document.getElementById("productSelect");
+function fillSelectOptions(selectEl, values, placeholder) {
+  selectEl.textContent = "";
+  const opt = document.createElement("option");
+  opt.value = "";
+  opt.textContent = placeholder;
+  selectEl.appendChild(opt);
+  values.forEach((v) => {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v;
+    selectEl.appendChild(o);
+  });
+}
 
-  storeSelect.textContent = "";
-  [...state.stores.keys()].sort((a, b) => +a - +b).forEach((id) => {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = storeLabel(id);
-    storeSelect.appendChild(opt);
+function populateFilterOptions() {
+  const cities = [...new Set([...state.stores.values()].map((s) => s.city))].sort();
+  const clusters = [...new Set([...state.stores.values()].map((s) => s.store_cluster))].sort((a, b) => +a - +b);
+  const formats = [...new Set([...state.stores.values()].map((s) => s.store_type))].sort();
+  fillSelectOptions(document.getElementById("storeCityFilter"), cities, "All cities");
+  fillSelectOptions(document.getElementById("storeClusterFilter"), clusters, "All clusters");
+  fillSelectOptions(document.getElementById("storeFormatFilter"), formats, "All formats");
+
+  const families = [...new Set([...state.products.values()].map((p) => p.product_family))].sort();
+  const classes = [...new Set([...state.products.values()].map((p) => p.product_class))].sort((a, b) => +a - +b);
+  fillSelectOptions(document.getElementById("productFamilyFilter"), families, "All families");
+  fillSelectOptions(document.getElementById("productClassFilter"), classes, "All classes");
+
+  ["storeSearch", "storeCityFilter", "storeClusterFilter", "storeFormatFilter"].forEach((id) =>
+    document.getElementById(id).addEventListener("input", renderStoreList));
+  ["productSearch", "productFamilyFilter", "productClassFilter", "productPerishableFilter"].forEach((id) =>
+    document.getElementById(id).addEventListener("input", renderProductList));
+}
+
+function renderPickList(containerId, ids, selectedId, labelFn, onSelect) {
+  const container = document.getElementById(containerId);
+  container.textContent = "";
+  if (ids.length === 0) {
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "No matches.";
+    container.appendChild(hint);
+    return;
+  }
+  ids.forEach((id) => {
+    const row = document.createElement("div");
+    row.className = "pick-item" + (id === selectedId ? " selected" : "");
+    const [main, sub] = labelFn(id);
+    row.appendChild(document.createTextNode(main));
+    const subEl = document.createElement("span");
+    subEl.className = "pick-sub";
+    subEl.textContent = sub;
+    row.appendChild(subEl);
+    row.addEventListener("click", () => onSelect(id));
+    container.appendChild(row);
+  });
+}
+
+function renderStoreList() {
+  const q = document.getElementById("storeSearch").value.trim().toLowerCase();
+  const city = document.getElementById("storeCityFilter").value;
+  const cluster = document.getElementById("storeClusterFilter").value;
+  const format = document.getElementById("storeFormatFilter").value;
+
+  const ids = sortedIds(state.stores).filter((id) => {
+    const s = state.stores.get(id);
+    if (city && s.city !== city) return false;
+    if (cluster && s.store_cluster !== cluster) return false;
+    if (format && s.store_type !== format) return false;
+    if (q && !(id.includes(q) || s.city.toLowerCase().includes(q))) return false;
+    return true;
   });
 
-  productSelect.textContent = "";
-  [...state.products.keys()].sort((a, b) => +a - +b).forEach((id) => {
-    const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = productLabel(id);
-    productSelect.appendChild(opt);
+  renderPickList("storeList", ids, selectedStoreId, (id) => {
+    const s = state.stores.get(id);
+    return [`${id} · ${s.city}`, `${s.department} · format ${s.store_type} · cluster ${s.store_cluster}`];
+  }, selectStore);
+}
+
+function renderProductList() {
+  const q = document.getElementById("productSearch").value.trim().toLowerCase();
+  const family = document.getElementById("productFamilyFilter").value;
+  const cls = document.getElementById("productClassFilter").value;
+  const perishable = document.getElementById("productPerishableFilter").value;
+
+  const ids = sortedIds(state.products).filter((id) => {
+    const p = state.products.get(id);
+    if (family && p.product_family !== family) return false;
+    if (cls && p.product_class !== cls) return false;
+    if (perishable && p.is_perishable !== perishable) return false;
+    if (q && !(id.includes(q) || p.product_family.toLowerCase().includes(q))) return false;
+    return true;
   });
 
-  storeSelect.disabled = false;
-  productSelect.disabled = false;
-  storeSelect.addEventListener("change", onSelectionChange);
-  productSelect.addEventListener("change", onSelectionChange);
+  renderPickList("productList", ids, selectedProductId, (id) => {
+    const p = state.products.get(id);
+    return [`${id} · ${p.product_family}`, `class ${p.product_class}${p.is_perishable === "1" ? " · perishable" : ""}`];
+  }, selectProduct);
 }
 
 function renderInfoPanels(storeId, productId) {
@@ -315,17 +386,29 @@ function renderInfoPanels(storeId, productId) {
     (p.is_perishable === "1" ? "Perishable" : "Non-perishable");
 }
 
-function onSelectionChange() {
-  const storeId = document.getElementById("storeSelect").value;
-  const productId = document.getElementById("productSelect").value;
-  renderInfoPanels(storeId, productId);
-  renderChart(storeId, productId);
+function refreshSelection() {
+  renderInfoPanels(selectedStoreId, selectedProductId);
+  renderChart(selectedStoreId, selectedProductId);
+}
+
+function selectStore(id) {
+  selectedStoreId = id;
+  renderStoreList();
+  refreshSelection();
+}
+
+function selectProduct(id) {
+  selectedProductId = id;
+  renderProductList();
+  refreshSelection();
 }
 
 function jumpToSeries(storeId, productId) {
-  document.getElementById("storeSelect").value = storeId;
-  document.getElementById("productSelect").value = productId;
-  onSelectionChange();
+  selectedStoreId = storeId;
+  selectedProductId = productId;
+  renderStoreList();
+  renderProductList();
+  refreshSelection();
   document.getElementById("chart").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -689,9 +772,7 @@ if (typeof document !== "undefined") {
       renderValidationStrip(result);
       renderExceptions();
       status.textContent = "Loaded " + file.name;
-      const storeId = document.getElementById("storeSelect").value;
-      const productId = document.getElementById("productSelect").value;
-      if (storeId && productId) renderChart(storeId, productId);
+      if (selectedStoreId && selectedProductId) renderChart(selectedStoreId, selectedProductId);
     };
     reader.readAsText(file);
   });
@@ -701,11 +782,13 @@ if (typeof document !== "undefined") {
     status.textContent = "Loading context data…";
     await loadContext();
     status.textContent = "";
-    populateDropdowns();
-    const storeId = document.getElementById("storeSelect").value;
-    const productId = document.getElementById("productSelect").value;
-    renderInfoPanels(storeId, productId);
-    renderChart(storeId, productId);
+    populateFilterOptions();
+    selectedStoreId = sortedIds(state.stores)[0];
+    selectedProductId = sortedIds(state.products)[0];
+    renderStoreList();
+    renderProductList();
+    renderInfoPanels(selectedStoreId, selectedProductId);
+    renderChart(selectedStoreId, selectedProductId);
   })();
 }
 

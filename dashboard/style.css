@@ -87,6 +87,33 @@ select, input[type="file"] {
 
 .field { min-width: 220px; }
 
+.list-panel { flex: 1; min-width: 260px; }
+.list-panel input[type="text"] { width: 100%; margin-bottom: 6px; }
+.filter-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.filter-row select { flex: 1; min-width: 0; font-size: 12px; padding: 4px 6px; }
+
+.pick-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.pick-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--border);
+}
+.pick-item:last-child { border-bottom: none; }
+.pick-item:hover { background: var(--grid); }
+.pick-item.selected {
+  background: var(--grid);
+  border-left-color: var(--series-1);
+  font-weight: 600;
+}
+.pick-item .pick-sub { display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; }
+
 .info-panel {
   font-size: 12px;
   color: var(--text-secondary);

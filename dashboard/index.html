@@ -41,15 +41,31 @@
   <div class="hint" id="exceptionMoreHint"></div>
 </div>
 
-<div class="card row">
-  <div class="field">
-    <label for="storeSelect">Store</label>
-    <select id="storeSelect" disabled><option>Loading…</option></select>
+<div class="card row" style="align-items:flex-start;">
+  <div class="field list-panel">
+    <label for="storeSearch">Store</label>
+    <input type="text" id="storeSearch" placeholder="Search id or city…">
+    <div class="filter-row">
+      <select id="storeCityFilter"><option value="">All cities</option></select>
+      <select id="storeClusterFilter"><option value="">All clusters</option></select>
+      <select id="storeFormatFilter"><option value="">All formats</option></select>
+    </div>
+    <div class="pick-list" id="storeList"><div class="hint">Loading…</div></div>
     <div class="info-panel" id="storeInfo"></div>
   </div>
-  <div class="field">
-    <label for="productSelect">Product</label>
-    <select id="productSelect" disabled><option>Loading…</option></select>
+  <div class="field list-panel">
+    <label for="productSearch">Product</label>
+    <input type="text" id="productSearch" placeholder="Search id or family…">
+    <div class="filter-row">
+      <select id="productFamilyFilter"><option value="">All families</option></select>
+      <select id="productClassFilter"><option value="">All classes</option></select>
+      <select id="productPerishableFilter">
+        <option value="">Perishable: all</option>
+        <option value="1">Perishable only</option>
+        <option value="0">Non-perishable only</option>
+      </select>
+    </div>
+    <div class="pick-list" id="productList"><div class="hint">Loading…</div></div>
     <div class="info-panel" id="productInfo"></div>
   </div>
 </div>
