@@ -143,6 +143,32 @@ more isn't uniform across products/stores:
   created net-new demand. That has to be inferred from sales history
   (e.g. compare sales in the days immediately after a promo ends).
 
+**Promotion mechanics, more detail (Sanne relaying Gustavo, 2026-09-10):**
+- `promotion=True` means the product was actively pushed in that store on
+  that date — better placement, signage, sometimes a different price. The
+  data does **not** say which mechanism was used or how strong the offer
+  was.
+- Execution varies by store — the same product can react very differently
+  depending on format, cluster, customer base, local context.
+- Three possible effects: genuinely incremental demand, pull-forward
+  (softer sales afterwards), or cannibalization (customers switch
+  brand/pack size/tier).
+- Product-specific: cooking oil/staples often show a strong unit lift
+  (stock-up behaviour), typically followed by softer sales after; wine/
+  premium/discretionary react strongly but inconsistently (clientele,
+  occasion, placement, price all matter); perishables are operationally
+  most sensitive — a strong promo moves volume fast, and availability/waste
+  make misses expensive.
+- **No universal promotion multiplier** — Gustavo explicitly warned against
+  one uplift factor across all products/stores. Promoted demand is a
+  different regime from normal shelf demand.
+- A promoted zero is especially suspicious but still doesn't *prove* a
+  stockout or failed promo — no shelf-availability/execution data exists to
+  confirm it.
+- **Modeling suggestion:** think in terms of promotion × product family and
+  promotion × store/cluster interactions at minimum, and consider testing
+  for post-promotion softness rather than a single True/False uplift term.
+
 **Lead time before holiday/payday:** no fixed number of days — varies by
 occasion, product, store. Fresh/staples/beverages/entertaining goods react
 earlier than routine household lines; payday effects split between the
@@ -257,6 +283,38 @@ looks fine:**
 - Quantile outputs must satisfy `P25 ≤ P50 ≤ P75 ≤ P95` per row — Gustavo
   called this out as a hard sanity check, and it's a natural validation
   rule for the dashboard too (see below).
+
+## Front-end requirements — Sanne relaying Gustavo's ask, 2026-09-10
+
+Framing: the context files explain *what* was happening around a sale, not
+*why* a low/zero sale happened — no shelf-availability, promo-execution,
+distribution-centre-incident, or manager's-explanation data exists. The
+dashboard should not pretend otherwise.
+
+Gustavo's brief for what a good front end does — "helps my team make a
+decision before the coffee goes cold, not a museum of colourful charts":
+- A clear daily planning view per store/product/date showing P25, P50, P75,
+  P95 together, always in that order — the range visible at a glance, not
+  just one number.
+- Filters for: store, city, cluster, format, product family, product class,
+  perishability, promotion, date.
+- Calendar context shown beside the forecast — holiday, transfer,
+  additional day, local scope, payday timing — and scope must be respected:
+  **a Pereira event must not be presented as if it affects Medellín.**
+- Promotion clearly marked — promoted demand is not ordinary shelf demand.
+- An exceptions page for lines needing attention: unusually high
+  uncertainty, forecasted zeros, promoted items with weak expected sales,
+  perishables, sharp changes around holidays.
+- Store and product drill-downs — go from an estate-level issue to the
+  exact store-product-date row without hunting through ten screens.
+- Comparison against recent recorded sales — while making clear a zero
+  sale doesn't prove weak demand (empty shelf ≠ weak demand).
+- A practical action view: what to review for replenishment, promotion
+  readiness, staffing, or a manager call.
+- Exportable detail — eventually someone needs the exact rows for the
+  store team.
+- Restrained colour: low/middle/high demand, not a "Christmas tree" —
+  abnormal cases should be obvious, ordinary cases quiet.
 
 ## Dashboard notes (validation ideas from Gustavo's review checklist)
 
