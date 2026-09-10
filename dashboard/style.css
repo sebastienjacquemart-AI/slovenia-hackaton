@@ -68,6 +68,29 @@ h1 {
   margin-bottom: 16px;
 }
 
+.tab-nav {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  font: inherit;
+  font-size: 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tab-btn:hover { color: var(--text-primary); }
+.tab-btn.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--series-1);
+  font-weight: 600;
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;
@@ -146,13 +169,6 @@ select, input[type="file"] {
 .status-warning .status-icon { color: var(--status-warning); }
 .status-critical .status-icon { color: var(--status-critical); }
 .status-info .status-icon { color: var(--text-muted); }
-
-#exceptionsDetails summary {
-  cursor: pointer;
-  font-weight: 600;
-  list-style-position: outside;
-}
-#exceptionsDetails summary::marker { color: var(--text-muted); }
 
 .table-wrap { overflow-x: auto; margin-top: 12px; }
 .exception-table { border-collapse: collapse; width: 100%; font-size: 12px; }

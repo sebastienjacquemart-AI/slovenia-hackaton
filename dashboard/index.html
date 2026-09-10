@@ -10,30 +10,46 @@
 <h1>Submission Review Dashboard</h1>
 <p class="subtitle">Load Jan's submission CSV and browse it in context, store × product at a time.</p>
 
-<div class="card row">
-  <div class="field">
-    <label for="fileInput">Submission file (schema: id, sales_count_p25/p50/p75/p95)</label>
-    <input type="file" id="fileInput" accept=".csv">
+<nav class="tab-nav" id="tabNav">
+  <button type="button" class="tab-btn" data-tab="overview">Overview</button>
+  <button type="button" class="tab-btn" data-tab="exceptions">Exceptions</button>
+  <button type="button" class="tab-btn" data-tab="forecasts">Forecasts</button>
+</nav>
+
+<section class="tab-panel" id="tab-overview">
+
+  <div class="card row">
+    <div class="field">
+      <label for="fileInput">Submission file (schema: id, sales_count_p25/p50/p75/p95)</label>
+      <input type="file" id="fileInput" accept=".csv">
+    </div>
+    <div id="loadStatus" class="hint"></div>
   </div>
-  <div id="loadStatus" class="hint"></div>
-</div>
 
-<div class="card row">
-  <div class="field">
-    <label for="shapInput">SHAP explanation file (optional — export with scripts/export_shap_for_dashboard.py)</label>
-    <input type="file" id="shapInput" accept=".csv">
+  <div class="card row">
+    <div class="field">
+      <label for="shapInput">SHAP explanation file (optional — export with scripts/export_shap_for_dashboard.py)</label>
+      <input type="file" id="shapInput" accept=".csv">
+    </div>
+    <div id="shapLoadStatus" class="hint"></div>
   </div>
-  <div id="shapLoadStatus" class="hint"></div>
-</div>
 
-<div class="card" id="validationCard" style="display:none">
-  <div class="status-list" id="validationList"></div>
-</div>
+  <div class="card" id="validationCard" style="display:none">
+    <div class="status-list" id="validationList"></div>
+  </div>
 
-<div class="card" id="exceptionsCard" style="display:none">
-  <details id="exceptionsDetails">
-    <summary id="exceptionsSummary">Loading exceptions…</summary>
-    <div class="row" style="margin-top:12px; align-items:flex-end;">
+  <div class="card" id="overviewSummaryCard" style="display:none">
+    <div id="overviewSummaryText"></div>
+    <button type="button" class="link-button" id="goToExceptionsBtn" style="margin-top:10px;">Review exceptions →</button>
+  </div>
+
+</section>
+
+<section class="tab-panel" id="tab-exceptions" hidden>
+
+  <div class="card" id="exceptionsCard" style="display:none">
+    <div class="hint" id="exceptionsSummary" style="font-weight:600; margin-bottom:12px;"></div>
+    <div class="row" style="align-items:flex-end;">
       <div class="field">
         <label for="exceptionFilter">Flag type</label>
         <select id="exceptionFilter"></select>
@@ -68,53 +84,58 @@
       </table>
     </div>
     <div class="hint" id="exceptionMoreHint"></div>
-  </details>
-</div>
-
-<div class="card row" style="align-items:flex-start;">
-  <div class="field list-panel">
-    <label for="storeSearch">Store</label>
-    <input type="text" id="storeSearch" placeholder="Search id or city…">
-    <div class="filter-row">
-      <select id="storeCityFilter"><option value="">All cities</option></select>
-      <select id="storeClusterFilter"><option value="">All clusters</option></select>
-      <select id="storeFormatFilter"><option value="">All formats</option></select>
-    </div>
-    <div class="pick-list" id="storeList"><div class="hint">Loading…</div></div>
-    <div class="info-panel" id="storeInfo"></div>
   </div>
-  <div class="field list-panel">
-    <label for="productSearch">Product</label>
-    <input type="text" id="productSearch" placeholder="Search id or family…">
-    <div class="filter-row">
-      <select id="productFamilyFilter"><option value="">All families</option></select>
-      <select id="productClassFilter"><option value="">All classes</option></select>
-      <select id="productPerishableFilter">
-        <option value="">Perishable: all</option>
-        <option value="1">Perishable only</option>
-        <option value="0">Non-perishable only</option>
-      </select>
+
+</section>
+
+<section class="tab-panel" id="tab-forecasts" hidden>
+
+  <div class="card row" style="align-items:flex-start;">
+    <div class="field list-panel">
+      <label for="storeSearch">Store</label>
+      <input type="text" id="storeSearch" placeholder="Search id or city…">
+      <div class="filter-row">
+        <select id="storeCityFilter"><option value="">All cities</option></select>
+        <select id="storeClusterFilter"><option value="">All clusters</option></select>
+        <select id="storeFormatFilter"><option value="">All formats</option></select>
+      </div>
+      <div class="pick-list" id="storeList"><div class="hint">Loading…</div></div>
+      <div class="info-panel" id="storeInfo"></div>
     </div>
-    <div class="pick-list" id="productList"><div class="hint">Loading…</div></div>
-    <div class="info-panel" id="productInfo"></div>
+    <div class="field list-panel">
+      <label for="productSearch">Product</label>
+      <input type="text" id="productSearch" placeholder="Search id or family…">
+      <div class="filter-row">
+        <select id="productFamilyFilter"><option value="">All families</option></select>
+        <select id="productClassFilter"><option value="">All classes</option></select>
+        <select id="productPerishableFilter">
+          <option value="">Perishable: all</option>
+          <option value="1">Perishable only</option>
+          <option value="0">Non-perishable only</option>
+        </select>
+      </div>
+      <div class="pick-list" id="productList"><div class="hint">Loading…</div></div>
+      <div class="info-panel" id="productInfo"></div>
+    </div>
   </div>
-</div>
 
-<div class="card chart-wrap">
-  <svg id="chart" width="820" height="340" viewBox="0 0 820 340"></svg>
-  <div id="tooltip"></div>
-  <div class="legend" id="legend"></div>
-  <div class="hint">A tick below the axis marks payday (3rd/18th). A zero in "Actual sales" means no units were recorded sold — it doesn't prove there was no demand (could be a stockout, poor placement, etc.).</div>
-</div>
+  <div class="card chart-wrap">
+    <svg id="chart" width="820" height="340" viewBox="0 0 820 340"></svg>
+    <div id="tooltip"></div>
+    <div class="legend" id="legend"></div>
+    <div class="hint">A tick below the axis marks payday (3rd/18th). A zero in "Actual sales" means no units were recorded sold — it doesn't prove there was no demand (could be a stockout, poor placement, etc.).</div>
+  </div>
 
-<div class="card chart-wrap" id="shapCard" style="display:none">
-  <strong>Why this forecast?</strong>
-  <p class="hint" style="margin:2px 0 10px">Each bar is one forecast day, split into how much each factor pushed that day's prediction above (red) or below (blue) the model's baseline. Hover a bar for the breakdown.</p>
-  <div class="quantile-tabs" id="shapQuantileTabs"></div>
-  <svg id="shapChart" width="820" height="200" viewBox="0 0 820 200"></svg>
-  <div id="shapTooltip"></div>
-  <div class="legend" id="shapLegend"></div>
-</div>
+  <div class="card chart-wrap" id="shapCard" style="display:none">
+    <strong>Why this forecast?</strong>
+    <p class="hint" style="margin:2px 0 10px">Each bar is one forecast day, split into how much each factor pushed that day's prediction above (red) or below (blue) the model's baseline. Hover a bar for the breakdown.</p>
+    <div class="quantile-tabs" id="shapQuantileTabs"></div>
+    <svg id="shapChart" width="820" height="200" viewBox="0 0 820 200"></svg>
+    <div id="shapTooltip"></div>
+    <div class="legend" id="shapLegend"></div>
+  </div>
+
+</section>
 
 <script src="app.js"></script>
 </body>

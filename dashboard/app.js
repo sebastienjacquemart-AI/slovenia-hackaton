@@ -495,6 +495,7 @@ function jumpToSeries(storeId, productId) {
   renderStoreList();
   renderProductList();
   refreshSelection();
+  switchTab("forecasts");
   document.getElementById("chart").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -506,9 +507,8 @@ const MAX_EXCEPTION_ROWS = 300;
 
 function renderExceptions() {
   const card = document.getElementById("exceptionsCard");
-  if (!state.submissionById) { card.style.display = "none"; return; }
+  if (!state.submissionById) { card.style.display = "none"; renderOverviewSummary(null); return; }
   card.style.display = "block";
-  document.getElementById("exceptionsDetails").open = false; // collapsed by default — see the count first, not a wall of rows
 
   lastExceptionFlags = scanExceptions();
 
@@ -521,7 +521,9 @@ function renderExceptions() {
 
   document.getElementById("exceptionsSummary").textContent =
     `${lastExceptionFlags.length.toLocaleString()} flagged row(s) — ` +
-    `${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info (click to review)`;
+    `${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info`;
+
+  renderOverviewSummary(bySeverity);
 
   const filterSelect = document.getElementById("exceptionFilter");
   filterSelect.textContent = "";
@@ -613,6 +615,17 @@ function renderExceptionTable() {
   hint.textContent = filtered.length > shown.length
     ? `Showing first ${shown.length.toLocaleString()} of ${filtered.length.toLocaleString()} — narrow the filter to see more.`
     : "";
+}
+
+// bySeverity is null before a submission file is loaded — hides the card.
+function renderOverviewSummary(bySeverity) {
+  const card = document.getElementById("overviewSummaryCard");
+  if (!bySeverity) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  const total = bySeverity.critical + bySeverity.warning + bySeverity.info;
+  document.getElementById("overviewSummaryText").textContent = total === 0
+    ? "No exceptions found — this submission looks clean."
+    : `${total.toLocaleString()} row(s) flagged for review — ${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info.`;
 }
 
 function exportFilteredExceptions() {
@@ -1101,6 +1114,27 @@ function showShapTooltip(tooltip, row, left, top) {
   tooltip.style.display = "block";
 }
 
+// ---------- Tab navigation ----------
+
+const TABS = ["overview", "exceptions", "forecasts"];
+
+function switchTab(tab) {
+  TABS.forEach((t) => {
+    document.getElementById("tab-" + t).hidden = t !== tab;
+  });
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === tab);
+  });
+}
+
+function initTabs() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  });
+  document.getElementById("goToExceptionsBtn").addEventListener("click", () => switchTab("exceptions"));
+  switchTab("overview");
+}
+
 // ---------- Wiring ----------
 
 if (typeof document !== "undefined") {
@@ -1136,6 +1170,7 @@ if (typeof document !== "undefined") {
   });
 
   (async function init() {
+    initTabs();
     const status = document.getElementById("loadStatus");
     status.textContent = "Loading context data…";
     await loadContext();
