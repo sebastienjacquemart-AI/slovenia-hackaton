@@ -15,7 +15,6 @@ from pipeline.data_processing.validation import (
     validate_sample_ids,
 )
 
-
 INPUT_FILES = (
     "sales_history.csv",
     "test.csv",
@@ -28,7 +27,9 @@ INPUT_FILES = (
 
 
 def source_paths(data_dir: Path, context_dir: Path) -> list[Path]:
-    return [data_dir / filename for filename in INPUT_FILES] + [context_dir / "store_traffic.csv"]
+    return [data_dir / filename for filename in INPUT_FILES] + [
+        context_dir / "store_traffic.csv"
+    ]
 
 
 def build_merged_data(

@@ -7,7 +7,6 @@ import warnings
 import numpy as np
 import polars as pl
 
-
 LOOKBACK_DAYS = 28
 MIN_POSITIVE_DAYS = 3
 MIN_POSITIVE_RATE = 0.50
@@ -24,23 +23,38 @@ def add_stockout_flag(dataset: pl.LazyFrame) -> pl.LazyFrame:
         .rolling_median(window_size=LOOKBACK_DAYS, min_samples=1)
         .over(SERIES_KEYS)
         .alias("_prior_positive_median"),
-        pl.col("sales_count").gt(0).cast(pl.Int16).shift(1)
+        pl.col("sales_count")
+        .gt(0)
+        .cast(pl.Int16)
+        .shift(1)
         .rolling_sum(window_size=LOOKBACK_DAYS, min_samples=1)
-        .over(SERIES_KEYS).alias("_prior_positive_count"),
-        pl.col("sales_count").is_not_null().cast(pl.Int16).shift(1)
+        .over(SERIES_KEYS)
+        .alias("_prior_positive_count"),
+        pl.col("sales_count")
+        .is_not_null()
+        .cast(pl.Int16)
+        .shift(1)
         .rolling_sum(window_size=LOOKBACK_DAYS, min_samples=1)
-        .over(SERIES_KEYS).alias("_prior_observation_count"),
+        .over(SERIES_KEYS)
+        .alias("_prior_observation_count"),
     )
     likely_stockout = (
         pl.col("sales_count").eq(0)
         & (pl.col("_prior_positive_count") >= MIN_POSITIVE_DAYS)
         & (pl.col("_prior_positive_median") >= MIN_TYPICAL_SALES)
-        & (pl.col("_prior_positive_count") / pl.col("_prior_observation_count") >= MIN_POSITIVE_RATE)
+        & (
+            pl.col("_prior_positive_count") / pl.col("_prior_observation_count")
+            >= MIN_POSITIVE_RATE
+        )
     ).fill_null(False)
     return ordered.with_columns(
-        pl.when(pl.col("dataset_split") == "train").then(likely_stockout)
-        .otherwise(pl.lit(None, dtype=pl.Boolean)).alias("is_likely_stockout")
-    ).drop("_prior_positive_median", "_prior_positive_count", "_prior_observation_count")
+        pl.when(pl.col("dataset_split") == "train")
+        .then(likely_stockout)
+        .otherwise(pl.lit(None, dtype=pl.Boolean))
+        .alias("is_likely_stockout")
+    ).drop(
+        "_prior_positive_median", "_prior_positive_count", "_prior_observation_count"
+    )
 
 
 def likely_stockout_for_last_day(history: np.ndarray) -> np.ndarray:
@@ -57,8 +71,10 @@ def likely_stockout_for_last_day(history: np.ndarray) -> np.ndarray:
         warnings.simplefilter("ignore", category=RuntimeWarning)
         typical = np.nanmedian(np.where(positive, prior, np.nan), axis=0)
     positive_rate = np.divide(
-        positive_count, observed_count,
-        out=np.zeros_like(positive_count, dtype=np.float32), where=observed_count > 0,
+        positive_count,
+        observed_count,
+        out=np.zeros_like(positive_count, dtype=np.float32),
+        where=observed_count > 0,
     )
     return (
         (history[-1] == 0)

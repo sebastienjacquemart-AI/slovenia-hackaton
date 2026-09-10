@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,7 +15,6 @@ import pandas as pd
 import polars as pl
 
 from .stockouts import likely_stockout_for_last_day
-
 
 QUANTILES = (0.25, 0.50, 0.75, 0.95)
 LAGS = (1, 7, 14, 28)
@@ -56,7 +55,13 @@ CONTEXT_FEATURE_GROUPS = {
         "has_transferred_event",
     ),
     "oil": ("oil_price", "oil_price_source_missing"),
-    "traffic": ("transaction_count",),
+    "traffic": (
+        "traffic_lag_1",
+        "traffic_mean_7",
+        "traffic_mean_28",
+        "traffic_ratio_7_28",
+        "traffic_source_missing",
+    ),
 }
 CATEGORICAL_CONTEXT_FEATURES = {
     "store_id",
@@ -90,6 +95,7 @@ class ForecastExplanations:
     shap_values: np.ndarray
     base_values: np.ndarray
     source_quantiles: np.ndarray
+    target_transform: str = "identity"
 
 
 def parse_args() -> argparse.Namespace:
@@ -129,21 +135,62 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--train-days", type=int, default=150)
     parser.add_argument("--holdout-days", type=int, default=30)
-    parser.add_argument("--num-boost-round", type=int, default=250)
-    parser.add_argument("--learning-rate", type=float, default=0.05)
+    parser.add_argument(
+        "--eval-windows",
+        type=int,
+        default=3,
+        help="Number of backward rolling validation windows (default: 3)",
+    )
+    parser.add_argument(
+        "--eval-holdout-days",
+        type=int,
+        default=14,
+        help="Days in each rolling validation window (default: 14)",
+    )
+    parser.add_argument(
+        "--forecast-strategy",
+        choices=("recursive", "direct"),
+        default="recursive",
+        help=(
+            "recursive trains one-step models and feeds predicted medians forward; "
+            "direct trains separate models for every forecast lead"
+        ),
+    )
+    parser.add_argument("--num-boost-round", type=int, default=500)
+    parser.add_argument("--learning-rate", type=float, default=0.03)
     parser.add_argument("--num-leaves", type=int, default=31)
+    parser.add_argument("--min-data-in-leaf", type=int, default=200)
+    parser.add_argument("--feature-fraction", type=float, default=0.9)
+    parser.add_argument("--bagging-fraction", type=float, default=0.9)
+    parser.add_argument("--bagging-freq", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260910)
     parser.add_argument("--threads", type=int, default=-1)
+    parser.add_argument(
+        "--log-sales",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Train on log1p sales and convert predictions back to sales units "
+            "(default: enabled)."
+        ),
+    )
     parser.add_argument(
         "--skip-holdout",
         action="store_true",
         help="Skip the 150/30 evaluation and only build the submission.",
     )
+    parser.add_argument(
+        "--shap",
+        action="store_true",
+        help="Write SHAP values beside the submission (default: disabled).",
+    )
     return parser.parse_args()
 
 
 def parse_feature_groups(raw_groups: str) -> tuple[str, ...]:
-    requested = {group.strip().lower() for group in raw_groups.split(",") if group.strip()}
+    requested = {
+        group.strip().lower() for group in raw_groups.split(",") if group.strip()
+    }
     requested.discard("sales")
     if "all" in requested:
         requested.remove("all")
@@ -155,7 +202,7 @@ def parse_feature_groups(raw_groups: str) -> tuple[str, ...]:
 
 
 def unique_prediction_path(approach_dir: Path, run_name: str) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_id = uuid4().hex[:8]
     return approach_dir / "predictions" / f"{timestamp}_{run_name}_{run_id}.csv"
 
@@ -169,9 +216,13 @@ def load_sales_panel(path: Path) -> SalesPanel:
     )
     duplicate_count = int(frame.duplicated(["date", "store_id", "product_id"]).sum())
     if duplicate_count:
-        raise ValueError(f"sales history has {duplicate_count} duplicate date/pair rows")
+        raise ValueError(
+            f"sales history has {duplicate_count} duplicate date/pair rows"
+        )
 
-    wide = frame.pivot(index="date", columns=["store_id", "product_id"], values="sales_count")
+    wide = frame.pivot(
+        index="date", columns=["store_id", "product_id"], values="sales_count"
+    )
     wide = wide.sort_index().sort_index(axis=1)
     if wide.isna().any().any():
         raise ValueError("sales history is not a complete date by store/product panel")
@@ -179,7 +230,9 @@ def load_sales_panel(path: Path) -> SalesPanel:
         raise ValueError("sales history contains negative values")
     return SalesPanel(
         dates=pd.DatetimeIndex(wide.index),
-        pairs=pd.MultiIndex.from_tuples(wide.columns.tolist(), names=["store_id", "product_id"]),
+        pairs=pd.MultiIndex.from_tuples(
+            wide.columns.tolist(), names=["store_id", "product_id"]
+        ),
         values=wide.to_numpy(dtype=np.float32, copy=True),
     )
 
@@ -194,9 +247,7 @@ def load_context_panel(
             f"{path} does not exist; run `uv run python -m pipeline data` first"
         )
     feature_names = tuple(
-        feature
-        for group in feature_groups
-        for feature in CONTEXT_FEATURE_GROUPS[group]
+        feature for group in feature_groups for feature in CONTEXT_FEATURE_GROUPS[group]
     )
     categorical_names = tuple(
         feature for feature in feature_names if feature in CATEGORICAL_CONTEXT_FEATURES
@@ -214,12 +265,17 @@ def load_context_panel(
             expression = (
                 expression.cast(pl.String).cast(pl.Enum(categories)).to_physical()
             )
-        elif feature in {"oil_price", "transaction_count"}:
+        elif feature in {
+            "oil_price",
+            "traffic_lag_1",
+            "traffic_mean_7",
+            "traffic_mean_28",
+            "traffic_ratio_7_28",
+        }:
             expression = expression.fill_null(0)
         expressions.append(expression.cast(pl.Float32).alias(feature))
     frame = (
-        source
-        .sort(["date", "store_id", "product_id"])
+        source.sort(["date", "store_id", "product_id"])
         .select(
             "date",
             pl.col("store_id").alias("_store_key"),
@@ -233,10 +289,14 @@ def load_context_panel(
     dates = pd.DatetimeIndex(frame["date"].unique(maintain_order=True).to_list())
     series_count = len(sales_panel.pairs)
     if frame.height != len(dates) * series_count:
-        raise ValueError("processed context is not a complete date by store/product panel")
-    first_date_pairs = frame.filter(pl.col("date") == frame["date"][0]).select(
-        "_store_key", "_product_key"
-    ).to_numpy()
+        raise ValueError(
+            "processed context is not a complete date by store/product panel"
+        )
+    first_date_pairs = (
+        frame.filter(pl.col("date") == frame["date"][0])
+        .select("_store_key", "_product_key")
+        .to_numpy()
+    )
     expected_pairs = np.column_stack(
         [
             sales_panel.pairs.get_level_values("store_id"),
@@ -244,11 +304,17 @@ def load_context_panel(
         ]
     )
     if not np.array_equal(first_date_pairs, expected_pairs):
-        raise ValueError("processed context store/product pairs do not align with sales history")
+        raise ValueError(
+            "processed context store/product pairs do not align with sales history"
+        )
     if not dates[: len(sales_panel.dates)].equals(sales_panel.dates):
-        raise ValueError("processed context dates do not begin with the sales history dates")
-    values = frame.select(feature_names).to_numpy().reshape(
-        len(dates), series_count, len(feature_names)
+        raise ValueError(
+            "processed context dates do not begin with the sales history dates"
+        )
+    values = (
+        frame.select(feature_names)
+        .to_numpy()
+        .reshape(len(dates), series_count, len(feature_names))
     )
     return ContextPanel(
         dates=dates,
@@ -296,6 +362,29 @@ def make_supervised(
     return np.vstack(feature_blocks), np.concatenate(target_blocks)
 
 
+def make_direct_supervised(
+    values: np.ndarray,
+    target_end: int,
+    lead: int,
+    context_values: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create lead-specific rows without using sales observed after forecast origin."""
+    if lead < 1:
+        raise ValueError("lead must be at least 1")
+    if not MIN_HISTORY + lead - 1 < target_end <= values.shape[0]:
+        raise ValueError(
+            "target_end must leave enough history and targets for the requested lead"
+        )
+    feature_blocks = []
+    target_blocks = []
+    for target_index in range(MIN_HISTORY + lead - 1, target_end):
+        origin_index = target_index - lead + 1
+        context_row = None if context_values is None else context_values[target_index]
+        feature_blocks.append(features_for_next(values[:origin_index], context_row))
+        target_blocks.append(values[target_index])
+    return np.vstack(feature_blocks), np.concatenate(target_blocks)
+
+
 def train_models(
     features: np.ndarray,
     targets: np.ndarray,
@@ -305,9 +394,10 @@ def train_models(
     categorical_feature_names: tuple[str, ...] = (),
 ) -> dict[float, lgb.Booster]:
     model_dir.mkdir(parents=True, exist_ok=True)
+    model_targets = np.log1p(targets) if getattr(args, "log_sales", False) else targets
     dataset = lgb.Dataset(
         features,
-        label=targets,
+        label=model_targets,
         feature_name=list(feature_names),
         categorical_feature=list(categorical_feature_names),
         free_raw_data=False,
@@ -321,10 +411,10 @@ def train_models(
             "metric": "quantile",
             "learning_rate": args.learning_rate,
             "num_leaves": args.num_leaves,
-            "min_data_in_leaf": 200,
-            "feature_fraction": 0.9,
-            "bagging_fraction": 0.9,
-            "bagging_freq": 1,
+            "min_data_in_leaf": args.min_data_in_leaf,
+            "feature_fraction": args.feature_fraction,
+            "bagging_fraction": args.bagging_fraction,
+            "bagging_freq": args.bagging_freq,
             "seed": args.seed,
             "feature_fraction_seed": args.seed,
             "bagging_seed": args.seed,
@@ -337,12 +427,67 @@ def train_models(
     return models
 
 
+def train_direct_models(
+    values: np.ndarray,
+    target_end: int,
+    horizon: int,
+    context_values: np.ndarray | None,
+    args: argparse.Namespace,
+    model_dir: Path,
+    feature_names: tuple[str, ...] = FEATURE_NAMES,
+    categorical_feature_names: tuple[str, ...] = (),
+) -> dict[int, dict[float, lgb.Booster]]:
+    """Fit one set of quantile models for each forecast lead."""
+    models_by_lead = {}
+    for lead in range(1, horizon + 1):
+        print(f"Training direct models for lead {lead}/{horizon}")
+        features, targets = make_direct_supervised(
+            values, target_end, lead, context_values
+        )
+        models_by_lead[lead] = train_models(
+            features,
+            targets,
+            args,
+            model_dir / f"lead_{lead:02d}",
+            feature_names,
+            categorical_feature_names,
+        )
+    return models_by_lead
+
+
+def _predict_quantiles(
+    models: dict[float, lgb.Booster],
+    features: np.ndarray,
+    include_shap: bool,
+    log_sales: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Predict, clip, and reorder quantiles, keeping explanations aligned."""
+    raw = np.column_stack([models[q].predict(features) for q in QUANTILES])
+    sales_predictions = np.expm1(raw) if log_sales else raw
+    clipped = np.maximum(sales_predictions, 0.0)
+    order = np.argsort(clipped, axis=1, stable=True)
+    coherent = np.take_along_axis(clipped, order, axis=1).astype(np.float32)
+    ordered_raw = np.take_along_axis(raw, order, axis=1).astype(np.float32)
+    source_quantiles = np.asarray(QUANTILES, dtype=np.float32)[order]
+    if not include_shap:
+        empty = np.empty(0, dtype=np.float32)
+        return coherent, ordered_raw, empty, source_quantiles
+    contributions = np.stack(
+        [models[q].predict(features, pred_contrib=True) for q in QUANTILES], axis=1
+    ).astype(np.float32)
+    ordered_contributions = np.take_along_axis(
+        contributions, order[:, :, np.newaxis], axis=1
+    )
+    return coherent, ordered_raw, ordered_contributions, source_quantiles
+
+
 def _recursive_forecast(
     models: dict[float, lgb.Booster],
     initial_history: np.ndarray,
     horizon: int,
     future_context: np.ndarray | None = None,
     include_shap: bool = False,
+    log_sales: bool = False,
 ) -> tuple[np.ndarray, ForecastExplanations | None]:
     """Forecast recursively, feeding the median prediction into every next-day feature."""
     history = initial_history.copy()
@@ -351,29 +496,18 @@ def _recursive_forecast(
     shap_steps = []
     base_steps = []
     source_quantile_steps = []
-    quantile_values = np.asarray(QUANTILES, dtype=np.float32)
     for step in range(horizon):
         context_row = None if future_context is None else future_context[step]
         features = features_for_next(history, context_row)
-        raw = np.column_stack([models[q].predict(features) for q in QUANTILES])
-        clipped = np.maximum(raw, 0.0)
-        order = np.argsort(clipped, axis=1, stable=True)
-        coherent = np.take_along_axis(clipped, order, axis=1).astype(np.float32)
+        coherent, ordered_raw, contributions, source_quantiles = _predict_quantiles(
+            models, features, include_shap, log_sales
+        )
         forecasts.append(coherent)
         if include_shap:
-            contributions = np.stack(
-                [models[q].predict(features, pred_contrib=True) for q in QUANTILES],
-                axis=1,
-            ).astype(np.float32)
-            ordered_contributions = np.take_along_axis(
-                contributions, order[:, :, np.newaxis], axis=1
-            )
-            raw_forecasts.append(
-                np.take_along_axis(raw, order, axis=1).astype(np.float32)
-            )
-            shap_steps.append(ordered_contributions[:, :, :-1])
-            base_steps.append(ordered_contributions[:, :, -1])
-            source_quantile_steps.append(quantile_values[order])
+            raw_forecasts.append(ordered_raw)
+            shap_steps.append(contributions[:, :, :-1])
+            base_steps.append(contributions[:, :, -1])
+            source_quantile_steps.append(source_quantiles)
         history = np.vstack((history, coherent[:, 1]))
         print(f"Forecast day {step + 1}/{horizon}", end="\r", flush=True)
     print()
@@ -385,6 +519,7 @@ def _recursive_forecast(
         shap_values=np.stack(shap_steps),
         base_values=np.stack(base_steps),
         source_quantiles=np.stack(source_quantile_steps),
+        target_transform="log1p" if log_sales else "identity",
     )
 
 
@@ -393,9 +528,11 @@ def recursive_forecast(
     initial_history: np.ndarray,
     horizon: int,
     future_context: np.ndarray | None = None,
+    log_sales: bool = False,
 ) -> np.ndarray:
     forecasts, _ = _recursive_forecast(
-        models, initial_history, horizon, future_context, include_shap=False
+        models, initial_history, horizon, future_context, include_shap=False,
+        log_sales=log_sales,
     )
     return forecasts
 
@@ -405,9 +542,81 @@ def recursive_forecast_with_shap(
     initial_history: np.ndarray,
     horizon: int,
     future_context: np.ndarray | None = None,
+    log_sales: bool = False,
 ) -> tuple[np.ndarray, ForecastExplanations]:
     forecasts, explanations = _recursive_forecast(
-        models, initial_history, horizon, future_context, include_shap=True
+        models, initial_history, horizon, future_context, include_shap=True,
+        log_sales=log_sales,
+    )
+    if explanations is None:
+        raise RuntimeError("SHAP explanations were not generated")
+    return forecasts, explanations
+
+
+def _direct_forecast(
+    models_by_lead: dict[int, dict[float, lgb.Booster]],
+    history: np.ndarray,
+    horizon: int,
+    future_context: np.ndarray | None = None,
+    include_shap: bool = False,
+    log_sales: bool = False,
+) -> tuple[np.ndarray, ForecastExplanations | None]:
+    """Forecast every lead from the same observed history."""
+    forecasts = []
+    raw_forecasts = []
+    shap_steps = []
+    base_steps = []
+    source_quantile_steps = []
+    for lead in range(1, horizon + 1):
+        context_row = None if future_context is None else future_context[lead - 1]
+        features = features_for_next(history, context_row)
+        coherent, ordered_raw, contributions, source_quantiles = _predict_quantiles(
+            models_by_lead[lead], features, include_shap, log_sales
+        )
+        forecasts.append(coherent)
+        if include_shap:
+            raw_forecasts.append(ordered_raw)
+            shap_steps.append(contributions[:, :, :-1])
+            base_steps.append(contributions[:, :, -1])
+            source_quantile_steps.append(source_quantiles)
+        print(f"Forecast lead {lead}/{horizon}", end="\r", flush=True)
+    print()
+    forecast_array = np.stack(forecasts)
+    if not include_shap:
+        return forecast_array, None
+    return forecast_array, ForecastExplanations(
+        raw_predictions=np.stack(raw_forecasts),
+        shap_values=np.stack(shap_steps),
+        base_values=np.stack(base_steps),
+        source_quantiles=np.stack(source_quantile_steps),
+        target_transform="log1p" if log_sales else "identity",
+    )
+
+
+def direct_forecast(
+    models_by_lead: dict[int, dict[float, lgb.Booster]],
+    history: np.ndarray,
+    horizon: int,
+    future_context: np.ndarray | None = None,
+    log_sales: bool = False,
+) -> np.ndarray:
+    forecasts, _ = _direct_forecast(
+        models_by_lead, history, horizon, future_context, include_shap=False,
+        log_sales=log_sales,
+    )
+    return forecasts
+
+
+def direct_forecast_with_shap(
+    models_by_lead: dict[int, dict[float, lgb.Booster]],
+    history: np.ndarray,
+    horizon: int,
+    future_context: np.ndarray | None = None,
+    log_sales: bool = False,
+) -> tuple[np.ndarray, ForecastExplanations]:
+    forecasts, explanations = _direct_forecast(
+        models_by_lead, history, horizon, future_context, include_shap=True,
+        log_sales=log_sales,
     )
     if explanations is None:
         raise RuntimeError("SHAP explanations were not generated")
@@ -419,57 +628,120 @@ def pinball_loss(actual: np.ndarray, forecast: np.ndarray, quantile: float) -> f
     return float(np.mean(np.maximum(quantile * error, (quantile - 1.0) * error)))
 
 
+def evaluate_rolling_holdout(
+    panel: SalesPanel,
+    args: argparse.Namespace,
+    artifacts_dir: Path,
+    context: ContextPanel | None = None,
+) -> dict[str, float | str]:
+    windows = getattr(args, "eval_windows", 1)
+    holdout_days = getattr(args, "eval_holdout_days", args.holdout_days)
+    if windows < 1 or holdout_days < 1:
+        raise ValueError("eval_windows and eval_holdout_days must be at least 1")
+    latest_origin = args.train_days
+    origins = [latest_origin - offset * holdout_days for offset in range(windows)]
+    if min(origins) < MIN_HISTORY or latest_origin + holdout_days > panel.values.shape[0]:
+        raise ValueError(
+            "rolling evaluation windows do not fit within the available history"
+        )
+    context_values = None if context is None else context.values
+    feature_names = (
+        FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    )
+    categorical_names = () if context is None else context.categorical_feature_names
+    window_metrics = []
+    for window_index, origin in enumerate(reversed(origins), start=1):
+        split_end = origin + holdout_days
+        print(f"Evaluating rolling window {window_index}/{windows}")
+        holdout_context = (
+            None
+            if context is None
+            else context.values[origin:split_end]
+        )
+        window_artifacts = artifacts_dir / "holdout_models" / f"window_{window_index:02d}"
+        if args.forecast_strategy == "direct":
+            models_by_lead = train_direct_models(
+                panel.values,
+                origin,
+                holdout_days,
+                context_values,
+                args,
+                window_artifacts,
+                feature_names,
+                categorical_names,
+            )
+            forecast = direct_forecast(
+                models_by_lead,
+                panel.values[:origin],
+                holdout_days,
+                holdout_context,
+                log_sales=getattr(args, "log_sales", False),
+            )
+        else:
+            features, targets = make_supervised(panel.values, origin, context_values)
+            models = train_models(
+                features,
+                targets,
+                args,
+                window_artifacts,
+                feature_names,
+                categorical_names,
+            )
+            forecast = recursive_forecast(
+                models,
+                panel.values[:origin],
+                holdout_days,
+                holdout_context,
+                log_sales=getattr(args, "log_sales", False),
+            )
+        actual = panel.values[origin:split_end]
+        metrics = {
+            f"pinball_p{int(quantile * 100):02d}": pinball_loss(
+                actual, forecast[:, :, index], quantile
+            )
+            for index, quantile in enumerate(QUANTILES)
+        }
+        metrics["mean_pinball"] = float(np.mean(list(metrics.values())))
+        metrics["train_end"] = panel.dates[origin - 1].date().isoformat()
+        metrics["holdout_start"] = panel.dates[origin].date().isoformat()
+        metrics["holdout_end"] = panel.dates[split_end - 1].date().isoformat()
+        window_metrics.append(metrics)
+
+    metrics = {
+        f"pinball_p{int(quantile * 100):02d}": float(
+            np.mean([window[f"pinball_p{int(quantile * 100):02d}"] for window in window_metrics])
+        )
+        for quantile in QUANTILES
+    }
+    metrics["mean_pinball"] = float(np.mean(list(metrics.values())))
+    metrics["train_start"] = panel.dates[0].date().isoformat()
+    metrics["train_end"] = window_metrics[-1]["train_end"]
+    metrics["holdout_start"] = window_metrics[0]["holdout_start"]
+    metrics["holdout_end"] = window_metrics[-1]["holdout_end"]
+    metrics["forecast_strategy"] = args.forecast_strategy
+    metrics["target_transform"] = (
+        "log1p" if getattr(args, "log_sales", False) else "identity"
+    )
+    metrics["eval_windows"] = windows
+    metrics["eval_holdout_days"] = holdout_days
+    metrics["windows"] = window_metrics
+    metrics_path = artifacts_dir / "holdout_metrics.json"
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
+    print(json.dumps(metrics, indent=2))
+    return metrics
+
+
 def evaluate_holdout(
     panel: SalesPanel,
     args: argparse.Namespace,
     artifacts_dir: Path,
     context: ContextPanel | None = None,
 ) -> dict[str, float | str]:
-    split_end = args.train_days + args.holdout_days
-    if split_end > panel.values.shape[0]:
-        raise ValueError(
-            f"requested {split_end} split days but history has {panel.values.shape[0]}"
-        )
-    context_values = None if context is None else context.values
-    feature_names = FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
-    categorical_names = () if context is None else context.categorical_feature_names
-    features, targets = make_supervised(panel.values, args.train_days, context_values)
-    models = train_models(
-        features,
-        targets,
-        args,
-        artifacts_dir / "holdout_models",
-        feature_names,
-        categorical_names,
-    )
-    holdout_context = (
-        None
-        if context is None
-        else context.values[args.train_days : args.train_days + args.holdout_days]
-    )
-    forecast = recursive_forecast(
-        models,
-        panel.values[: args.train_days],
-        args.holdout_days,
-        holdout_context,
-    )
-    actual = panel.values[args.train_days:split_end]
-    metrics = {
-        f"pinball_p{int(quantile * 100):02d}": pinball_loss(
-            actual, forecast[:, :, index], quantile
-        )
-        for index, quantile in enumerate(QUANTILES)
-    }
-    metrics["mean_pinball"] = float(np.mean(list(metrics.values())))
-    metrics["train_start"] = panel.dates[0].date().isoformat()
-    metrics["train_end"] = panel.dates[args.train_days - 1].date().isoformat()
-    metrics["holdout_start"] = panel.dates[args.train_days].date().isoformat()
-    metrics["holdout_end"] = panel.dates[split_end - 1].date().isoformat()
-    metrics_path = artifacts_dir / "holdout_metrics.json"
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
-    print(json.dumps(metrics, indent=2))
-    return metrics
+    """Backward-compatible single-window evaluation helper."""
+    args.eval_windows = 1
+    args.eval_holdout_days = args.holdout_days
+    return evaluate_rolling_holdout(panel, args, artifacts_dir, context)
 
 
 def write_submission(
@@ -487,7 +759,9 @@ def write_submission(
     sample = pd.read_csv(sample_path)
     expected_columns = ["id"] + [f"sales_count_p{int(q * 100):02d}" for q in QUANTILES]
     if list(sample.columns) != expected_columns:
-        raise ValueError(f"unexpected sample submission columns: {list(sample.columns)}")
+        raise ValueError(
+            f"unexpected sample submission columns: {list(sample.columns)}"
+        )
     if len(test) != len(sample) or not np.array_equal(test["id"], sample["id"]):
         raise ValueError("test IDs do not exactly match the sample submission")
 
@@ -498,7 +772,9 @@ def write_submission(
     test_pairs = pd.MultiIndex.from_frame(test[["store_id", "product_id"]])
     pair_positions = panel.pairs.get_indexer(test_pairs)
     if (date_positions < 0).any() or (pair_positions < 0).any():
-        raise ValueError("test contains dates or store/product pairs missing from the forecast")
+        raise ValueError(
+            "test contains dates or store/product pairs missing from the forecast"
+        )
 
     ordered_forecasts = forecasts[date_positions, pair_positions]
     submission = pd.DataFrame({"id": sample["id"]})
@@ -510,7 +786,9 @@ def write_submission(
         raise ValueError("submission quantiles cross")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
-        raise FileExistsError(f"refusing to overwrite existing prediction file: {output_path}")
+        raise FileExistsError(
+            f"refusing to overwrite existing prediction file: {output_path}"
+        )
     submission.to_csv(output_path, index=False, float_format="%.6f")
     print(f"Wrote {len(submission):,} rows to {output_path}")
 
@@ -538,14 +816,19 @@ def write_shap_values(
         raise ValueError("test contains rows missing from the SHAP forecast")
 
     ordered_forecasts = forecasts[date_positions, pair_positions]
-    ordered_raw = explanations.raw_predictions[date_positions, pair_positions]
+    ordered_model_raw = explanations.raw_predictions[date_positions, pair_positions]
+    ordered_raw = (
+        np.expm1(ordered_model_raw)
+        if explanations.target_transform == "log1p"
+        else ordered_model_raw
+    )
     ordered_shap = explanations.shap_values[date_positions, pair_positions]
     ordered_base = explanations.base_values[date_positions, pair_positions]
     ordered_sources = explanations.source_quantiles[date_positions, pair_positions]
     if ordered_shap.shape[-1] != len(feature_names):
         raise ValueError("SHAP feature count does not match model feature names")
     reconstructed = ordered_base + ordered_shap.sum(axis=-1)
-    if not np.allclose(reconstructed, ordered_raw, rtol=1e-4, atol=1e-4):
+    if not np.allclose(reconstructed, ordered_model_raw, rtol=1e-4, atol=1e-4):
         raise ValueError("SHAP values do not reconstruct the raw model predictions")
 
     row_count = len(test)
@@ -555,11 +838,12 @@ def write_shap_values(
             np.asarray(QUANTILES, dtype=np.float32), row_count
         ),
         "source_model_quantile": ordered_sources.reshape(-1),
+        "target_transform": [explanations.target_transform]
+        * (row_count * len(QUANTILES)),
+        "raw_model_prediction": ordered_model_raw.reshape(-1),
         "raw_prediction": ordered_raw.reshape(-1),
         "submitted_prediction": ordered_forecasts.reshape(-1),
-        "postprocessing_adjustment": (
-            ordered_forecasts - ordered_raw
-        ).reshape(-1),
+        "postprocessing_adjustment": (ordered_forecasts - ordered_raw).reshape(-1),
         "base_value": ordered_base.reshape(-1),
     }
     for index, feature_name in enumerate(feature_names):
@@ -567,7 +851,9 @@ def write_shap_values(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
-        raise FileExistsError(f"refusing to overwrite existing SHAP file: {output_path}")
+        raise FileExistsError(
+            f"refusing to overwrite existing SHAP file: {output_path}"
+        )
     pl.DataFrame(columns).write_parquet(output_path, compression="zstd")
     print(f"Wrote {row_count * len(QUANTILES):,} SHAP rows to {output_path}")
 
@@ -583,7 +869,9 @@ def main() -> None:
     )
     enabled_features = ["sales", *feature_groups]
     print(f"Feature groups: {', '.join(enabled_features)}")
-    run_name = "lgbm_" + "_".join(enabled_features)
+    run_name = f"lgbm_{args.forecast_strategy}_" + "_".join(enabled_features)
+    if args.log_sales:
+        run_name += "_log_sales"
     output_path = args.output or unique_prediction_path(
         Path(__file__).resolve().parent, run_name
     )
@@ -592,24 +880,21 @@ def main() -> None:
         if not feature_groups
         else args.artifacts_dir / "_".join(enabled_features)
     )
+    if args.forecast_strategy == "direct":
+        run_artifacts_dir = run_artifacts_dir / "direct"
+    if args.log_sales:
+        run_artifacts_dir = run_artifacts_dir / "log_sales"
     if not args.skip_holdout:
-        evaluate_holdout(panel, args, run_artifacts_dir, context)
+        evaluate_rolling_holdout(panel, args, run_artifacts_dir, context)
 
     context_values = None if context is None else context.values
-    feature_names = FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    feature_names = (
+        FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    )
     categorical_names = () if context is None else context.categorical_feature_names
-    features, targets = make_supervised(
-        panel.values, panel.values.shape[0], context_values
+    test = pd.read_csv(
+        args.data_dir / "test.csv", usecols=["date"], parse_dates=["date"]
     )
-    models = train_models(
-        features,
-        targets,
-        args,
-        run_artifacts_dir / "final_models",
-        feature_names,
-        categorical_names,
-    )
-    test = pd.read_csv(args.data_dir / "test.csv", usecols=["date"], parse_dates=["date"])
     horizon = test["date"].nunique()
     future_context = (
         None
@@ -618,9 +903,63 @@ def main() -> None:
     )
     if future_context is not None and future_context.shape[0] != horizon:
         raise ValueError("processed context does not cover the full forecast horizon")
-    forecasts, explanations = recursive_forecast_with_shap(
-        models, panel.values, horizon, future_context
-    )
+    if args.forecast_strategy == "direct":
+        models_by_lead = train_direct_models(
+            panel.values,
+            panel.values.shape[0],
+            horizon,
+            context_values,
+            args,
+            run_artifacts_dir / "final_models",
+            feature_names,
+            categorical_names,
+        )
+        if args.shap:
+            forecasts, explanations = direct_forecast_with_shap(
+                models_by_lead,
+                panel.values,
+                horizon,
+                future_context,
+                log_sales=args.log_sales,
+            )
+        else:
+            forecasts = direct_forecast(
+                models_by_lead,
+                panel.values,
+                horizon,
+                future_context,
+                log_sales=args.log_sales,
+            )
+            explanations = None
+    else:
+        features, targets = make_supervised(
+            panel.values, panel.values.shape[0], context_values
+        )
+        models = train_models(
+            features,
+            targets,
+            args,
+            run_artifacts_dir / "final_models",
+            feature_names,
+            categorical_names,
+        )
+        if args.shap:
+            forecasts, explanations = recursive_forecast_with_shap(
+                models,
+                panel.values,
+                horizon,
+                future_context,
+                log_sales=args.log_sales,
+            )
+        else:
+            forecasts = recursive_forecast(
+                models,
+                panel.values,
+                horizon,
+                future_context,
+                log_sales=args.log_sales,
+            )
+            explanations = None
     write_submission(
         panel,
         forecasts,
@@ -628,14 +967,15 @@ def main() -> None:
         args.data_dir / "sample_submission.csv",
         output_path,
     )
-    write_shap_values(
-        panel,
-        forecasts,
-        explanations,
-        feature_names,
-        args.data_dir / "test.csv",
-        output_path.with_suffix(".shap.parquet"),
-    )
+    if explanations is not None:
+        write_shap_values(
+            panel,
+            forecasts,
+            explanations,
+            feature_names,
+            args.data_dir / "test.csv",
+            output_path.with_suffix(".shap.parquet"),
+        )
 
 
 if __name__ == "__main__":

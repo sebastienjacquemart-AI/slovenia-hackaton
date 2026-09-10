@@ -140,6 +140,44 @@ The default run holds out the final 28 days and writes its artifacts under
 The report includes the validation dates, row counts, and pinball loss for P25, P50,
 P75, and P95. A pipeline run evaluates a model. It does not create a submission CSV.
 
+### Reproduce the best LightGBM prediction
+
+The best causal recursive backtest used the sales history plus `promotion`, `calendar`,
+`product`, and `store` context. It scored `0.16318` mean log-pinball loss on the final
+28-day replay. The holdout forecast feeds each predicted median into the next day's lag
+features, so it does not use observed sales from the validation period.
+
+From this directory, train the final model on all available history and write a fresh
+submission with the same settings:
+
+```bash
+uv run python -m pipeline.forecast \
+  --feature-groups promotion,calendar,product,store \
+  --skip-holdout \
+  --num-boost-round 500 \
+  --learning-rate 0.03 \
+  --num-leaves 31 \
+  --min-data-in-leaf 20 \
+  --feature-fraction 1.0 \
+  --bagging-fraction 1.0 \
+  --bagging-freq 0 \
+  --seed 20260910 \
+  --artifacts-dir pipeline/artifacts/final_submission_causal_best \
+  --output pipeline/predictions/lgbm_causal_best_final.csv
+```
+
+Validate the generated file, configure the required team name, and submit it:
+
+```bash
+./forecasting-participant-cli team --name "I wish I was in the sauna"
+./forecasting-participant-cli validate pipeline/predictions/lgbm_causal_best_final.csv
+./forecasting-participant-cli submit pipeline/predictions/lgbm_causal_best_final.csv
+```
+
+For a comparable 28-day audit before final training, omit `--skip-holdout` and add
+`--train-days 152 --eval-windows 1 --eval-holdout-days 28`. The reported metric is the
+mean of the four log-scale pinball losses for P25, P50, P75, and P95.
+
 ### Run one or more stages
 
 The stage name is the last stage to run. Upstream stages run first when needed, and
@@ -156,6 +194,16 @@ Use the historical quantile model for a quick baseline:
 ```bash
 uv run python -m pipeline all --model historical_quantile
 ```
+
+Try AutoGluon on the same Stage 2 features and chronological holdout:
+
+```bash
+uv run python -m pipeline train --model autogluon \
+  --autogluon-time-limit 300
+```
+
+AutoGluon requires Python 3.13 or older. `uv sync` selects a compatible interpreter
+from the project's declared Python range.
 
 Choose feature groups with a comma-separated list. The available groups are
 `identity`, `promotion`, `calendar`, `product`, `store`, `external`, and

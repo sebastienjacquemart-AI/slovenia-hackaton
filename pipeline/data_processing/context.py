@@ -15,9 +15,7 @@ def effective_holiday_expression() -> pl.Expr:
 
 
 def effective_event_expression() -> pl.Expr:
-    return ~(
-        (pl.col("event_type") == "Holiday") & pl.col("is_transferred")
-    )
+    return ~((pl.col("event_type") == "Holiday") & pl.col("is_transferred"))
 
 
 def add_holiday_distances(
@@ -67,12 +65,8 @@ def add_holiday_distances(
             pl.col("days_since_effective_holiday").fill_null(-1),
         )
         .with_columns(
-            (pl.col("days_until_effective_holiday") == 1).alias(
-                "is_1d_before_holiday"
-            ),
-            (pl.col("days_until_effective_holiday") == 2).alias(
-                "is_2d_before_holiday"
-            ),
+            (pl.col("days_until_effective_holiday") == 1).alias("is_1d_before_holiday"),
+            (pl.col("days_until_effective_holiday") == 2).alias("is_2d_before_holiday"),
         )
     )
 
@@ -92,10 +86,7 @@ def build_event_context(
             (pl.col("scope") == "Regional")
             & (pl.col("location") == pl.col("department"))
         )
-        | (
-            (pl.col("scope") == "Local")
-            & (pl.col("location") == pl.col("city"))
-        )
+        | ((pl.col("scope") == "Local") & (pl.col("location") == pl.col("city")))
     )
     unmatched = events_with_id.join(
         expanded.select("_event_id").unique(), on="_event_id", how="anti"
@@ -165,7 +156,11 @@ def build_daily_oil_context(
     if int(scalar(summary, "invalid_prices")):
         raise ValueError("index_oil.csv contains invalid non-null prices")
     dates = pl.DataFrame(
-        {"date": pl.date_range(start=start_date, end=end_date, interval="1d", eager=True)}
+        {
+            "date": pl.date_range(
+                start=start_date, end=end_date, interval="1d", eager=True
+            )
+        }
     )
     return (
         dates.join(oil, on="date", how="left")
@@ -173,6 +168,75 @@ def build_daily_oil_context(
         .with_columns(pl.col("oil_price").is_null().alias("oil_price_source_missing"))
         .with_columns(pl.col("oil_price").forward_fill())
     )
+
+
+def build_daily_traffic_context(
+    traffic: pl.DataFrame,
+    stores: pl.DataFrame,
+    start_date: date,
+    end_date: date,
+) -> pl.DataFrame:
+    """Build causal store-traffic features for the complete forecast calendar.
+
+    Same-day traffic is retained for diagnostics, but model features use only
+    traffic known before the target date. For dates after the traffic extract,
+    the last observed store traffic is carried forward as an as-of baseline;
+    ``traffic_source_missing`` makes that uncertainty explicit.
+    """
+    summary = traffic.select(
+        pl.len().alias("rows"),
+        pl.struct(["date", "store_id"]).n_unique().alias("unique_keys"),
+        pl.col("date").null_count().alias("null_dates"),
+        pl.col("store_id").null_count().alias("null_stores"),
+        pl.col("transaction_count").null_count().alias("null_counts"),
+        (pl.col("transaction_count") < 0)
+        .fill_null(True)
+        .sum()
+        .alias("negative_counts"),
+    )
+    if int(scalar(summary, "rows")) != int(scalar(summary, "unique_keys")):
+        raise ValueError("store_traffic.csv contains duplicate date/store rows")
+    for column in ("null_dates", "null_stores", "null_counts", "negative_counts"):
+        if int(scalar(summary, column)):
+            raise ValueError(f"store_traffic.csv failed {column}")
+
+    calendar = pl.DataFrame(
+        {"date": pl.date_range(start_date, end_date, interval="1d", eager=True)}
+    ).join(stores.select("store_id").unique(), how="cross")
+    complete = (
+        calendar.join(traffic, on=["date", "store_id"], how="left", validate="1:1")
+        .sort(["store_id", "date"])
+        .with_columns(
+            pl.col("transaction_count").is_null().alias("traffic_source_missing"),
+            pl.col("transaction_count")
+            .forward_fill()
+            .over("store_id")
+            .alias("_traffic_last_observed"),
+        )
+        .with_columns(
+            pl.col("_traffic_last_observed")
+            .shift(1)
+            .over("store_id")
+            .alias("traffic_lag_1"),
+            pl.col("_traffic_last_observed")
+            .shift(1)
+            .rolling_mean(window_size=7, min_samples=1)
+            .over("store_id")
+            .alias("traffic_mean_7"),
+            pl.col("_traffic_last_observed")
+            .shift(1)
+            .rolling_mean(window_size=28, min_samples=1)
+            .over("store_id")
+            .alias("traffic_mean_28"),
+        )
+        .with_columns(
+            (pl.col("traffic_mean_7") / (pl.col("traffic_mean_28") + 1.0)).alias(
+                "traffic_ratio_7_28"
+            )
+        )
+        .drop("_traffic_last_observed")
+    )
+    return complete
 
 
 def add_event_defaults(frame: pl.LazyFrame) -> pl.LazyFrame:
