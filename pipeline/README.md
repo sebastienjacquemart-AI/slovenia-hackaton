@@ -32,6 +32,10 @@ data/
 └── sample_submission.csv
 ```
 
+Stage 1 also reads `gustavo_context/store_traffic.csv`. Override that directory with
+`--context-dir`. Traffic is observed for the training period only; forecast rows keep a
+missing value rather than assuming future transaction counts.
+
 ## Run the full pipeline
 
 ```bash
