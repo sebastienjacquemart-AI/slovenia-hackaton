@@ -1,0 +1,25 @@
+date,event_type,scope,location,is_transferred
+2026-03-02,Holiday,National,Colombia,False
+2026-03-03,Holiday,National,Colombia,False
+2026-03-05,Holiday,Local,Cartagena,False
+2026-04-04,Holiday,Regional,Bolívar,False
+2026-04-15,Holiday,Local,Pereira,True
+2026-04-16,Transfer,Local,Pereira,False
+2026-04-17,Holiday,Local,Santa Marta,False
+2026-04-17,Holiday,National,Colombia,False
+2026-04-24,Holiday,Local,Manizales,False
+2026-05-04,Holiday,National,Colombia,False
+2026-05-15,Holiday,Local,Armenia,False
+2026-05-16,Additional,National,Colombia,False
+2026-05-17,Event,National,Colombia,False
+2026-05-27,Holiday,National,Colombia,True
+2026-05-29,Transfer,National,Colombia,False
+2026-06-26,Holiday,Local,Montería,False
+2026-06-28,Holiday,Regional,Boyacá,False
+2026-06-28,Holiday,Local,Tunja,False
+2026-06-28,Holiday,Local,Cali,False
+2026-07-06,Holiday,Local,Sincelejo,False
+2026-07-06,Holiday,Local,Ibagué,False
+2026-07-26,Holiday,Local,Envigado,False
+2026-07-27,Additional,Local,Barranquilla,False
+2026-07-28,Additional,Local,Barranquilla,False

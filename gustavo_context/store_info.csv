@@ -1,0 +1,21 @@
+store_id,city,department,store_type,store_cluster
+2,Medellín,Antioquia,D,13
+3,Medellín,Antioquia,D,8
+6,Medellín,Antioquia,D,13
+7,Medellín,Antioquia,D,8
+8,Medellín,Antioquia,D,8
+9,Medellín,Antioquia,B,6
+11,Envigado,Antioquia,B,6
+20,Medellín,Antioquia,B,6
+24,Barranquilla,Atlántico,D,1
+27,Soledad,Atlántico,D,1
+39,Pereira,Risaralda,B,6
+40,Cali,Valle del Cauca,C,3
+44,Medellín,Antioquia,A,5
+45,Medellín,Antioquia,A,11
+46,Medellín,Antioquia,A,14
+47,Medellín,Antioquia,A,14
+48,Medellín,Antioquia,A,14
+49,Medellín,Antioquia,A,11
+50,Bucaramanga,Santander,A,14
+51,Barranquilla,Atlántico,A,17
