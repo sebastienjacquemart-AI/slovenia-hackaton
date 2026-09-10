@@ -9,13 +9,13 @@ from pathlib import Path
 
 import polars as pl
 
-from pipeline.context import (
+from .context import (
     add_event_defaults as _add_event_defaults,
     build_daily_oil_context as _build_daily_oil_context,
     build_event_context as _build_event_context,
 )
-from pipeline.sources import parse_date as _parse_date, scan_sources as _scan_sources
-from pipeline.validation import (
+from .sources import parse_date as _parse_date, scan_sources as _scan_sources
+from .validation import (
     scalar as _scalar,
     validate_context_sources as _validate_context_sources,
     validate_dimension as _validate_dimension,
