@@ -19,9 +19,26 @@ const FLAG_TYPES = {
   promo_no_lift: { label: "Promoted day, no forecast lift", severity: "warning" },
   holiday_flat: { label: "Holiday/pre-holiday treated as normal", severity: "warning" },
   essential_low: { label: "Essential item, P50 = 0", severity: "warning" },
+  zero_forecast: { label: "Median forecast is 0", severity: "info" },
+  wide_spread: { label: "Unusually wide P25–P95 spread", severity: "info" },
   baseline_deviation: { label: "Large deviation from baseline", severity: "info" },
 };
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
+
+// What a reviewer should actually do about each flag — Gustavo's "practical
+// action view" ask, folded into the exceptions table rather than a second page.
+const ACTION_BY_FLAG = {
+  monotonicity: "Data integrity — fix/reject before use",
+  perishable_spike: "Replenishment — perishable, verify upper-bound stock",
+  promo_no_lift: "Promotion readiness — review the planned promo",
+  holiday_flat: "Calendar readiness — check holiday/payday staffing & stock",
+  essential_low: "Replenishment — essential item, confirm before it hits zero",
+  zero_forecast: "Manager review — confirm zero is expected, not a data gap",
+  wide_spread: "Manager review — high uncertainty, use judgement not the raw number",
+  baseline_deviation: "Manager review — sanity-check the change vs. baseline",
+};
+
+const HISTORY_LOOKBACK_DAYS = 30;
 
 const state = {
   stores: new Map(),        // store_id -> {city, department, store_type, store_cluster}
@@ -30,6 +47,7 @@ const state = {
   testById: new Map(),      // id -> {date, store_id, product_id, promotion}
   seriesIndex: new Map(),   // "store|product" -> [{id, date, promotion}, ...] chronological
   baselineById: new Map(),  // id -> {p25,p50,p75,p95}
+  historyIndex: new Map(),  // "store|product" -> [{date, sales_count, promotion}, ...], last HISTORY_LOOKBACK_DAYS only
   submissionById: null,     // id -> {p25,p50,p75,p95}, set once a file is loaded
 };
 
@@ -97,6 +115,7 @@ async function loadContext() {
   });
 
   const testTxt = await loadText("../data/test.csv");
+  let testMinDate = null;
   forEachRow(testTxt, (f) => {
     const [id, date, storeId, productId, promotion] = f;
     state.testById.set(id, { date, store_id: storeId, product_id: productId, promotion });
@@ -104,11 +123,25 @@ async function loadContext() {
     let arr = state.seriesIndex.get(key);
     if (!arr) { arr = []; state.seriesIndex.set(key, arr); }
     arr.push({ id, date, promotion });
+    if (testMinDate === null || date < testMinDate) testMinDate = date;
   });
 
-  const baselineTxt = await loadText("../predictions_baseline.csv");
+  const [baselineTxt, historyTxt] = await Promise.all([
+    loadText("../predictions_baseline.csv"),
+    loadText("../data/sales_history.csv"),
+  ]);
   forEachRow(baselineTxt, (f) => {
     state.baselineById.set(f[0], { p25: +f[1], p50: +f[2], p75: +f[3], p95: +f[4] });
+  });
+
+  const historyCutoff = testMinDate ? addDays(testMinDate, -HISTORY_LOOKBACK_DAYS) : null;
+  forEachRow(historyTxt, (f) => {
+    const [, date, storeId, productId, salesCount, promotion] = f;
+    if (historyCutoff && date < historyCutoff) return;
+    const key = storeId + "|" + productId;
+    let arr = state.historyIndex.get(key);
+    if (!arr) { arr = []; state.historyIndex.set(key, arr); }
+    arr.push({ date, sales_count: +salesCount, promotion });
   });
 }
 
@@ -228,7 +261,7 @@ function scanExceptions() {
     if (!product || !store) continue;
 
     function addFlag(type, detail) {
-      flags.push({ id, storeId: t.store_id, productId: t.product_id, date: t.date, type, detail });
+      flags.push({ id, storeId: t.store_id, productId: t.product_id, date: t.date, promotion: t.promotion, type, detail });
     }
 
     if (!(sub.p25 <= sub.p50 && sub.p50 <= sub.p75 && sub.p75 <= sub.p95)) {
@@ -252,8 +285,16 @@ function scanExceptions() {
       if (diffRatio < 0.1) addFlag("holiday_flat", `P50 ${sub.p50} ≈ this series' normal-day average ${stats.nonHolidayAvg.toFixed(1)}`);
     }
 
-    if (STAPLE_FAMILIES.has(product.product_family) && sub.p50 === 0 && sub.p95 > 0) {
-      addFlag("essential_low", `Median forecast is 0 (P95 ${sub.p95}), family ${product.product_family}`);
+    if (sub.p50 === 0 && sub.p95 > 0) {
+      if (STAPLE_FAMILIES.has(product.product_family)) {
+        addFlag("essential_low", `Median forecast is 0 (P95 ${sub.p95}), family ${product.product_family}`);
+      } else {
+        addFlag("zero_forecast", `Median forecast is 0 (P95 ${sub.p95}), family ${product.product_family}`);
+      }
+    }
+
+    if (sub.p95 - sub.p25 >= 2.5 * Math.max(sub.p50, 1)) {
+      addFlag("wide_spread", `P25 ${sub.p25} to P95 ${sub.p95} — wide relative to P50 ${sub.p50}`);
     }
 
     const base = state.baselineById.get(id);
@@ -422,6 +463,7 @@ function renderExceptions() {
   const card = document.getElementById("exceptionsCard");
   if (!state.submissionById) { card.style.display = "none"; return; }
   card.style.display = "block";
+  document.getElementById("exceptionsDetails").open = false; // collapsed by default — see the count first, not a wall of rows
 
   lastExceptionFlags = scanExceptions();
 
@@ -434,7 +476,7 @@ function renderExceptions() {
 
   document.getElementById("exceptionsSummary").textContent =
     `${lastExceptionFlags.length.toLocaleString()} flagged row(s) — ` +
-    `${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info`;
+    `${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info (click to review)`;
 
   const filterSelect = document.getElementById("exceptionFilter");
   filterSelect.textContent = "";
@@ -455,17 +497,31 @@ function renderExceptions() {
     renderExceptionTable();
   };
 
+  ["exceptionPromoFilter", "exceptionFromDate", "exceptionToDate"].forEach((id) =>
+    document.getElementById(id).onchange = renderExceptionTable);
+  document.getElementById("exportExceptionsBtn").onclick = exportFilteredExceptions;
+
   renderExceptionTable();
+}
+
+function filteredExceptions() {
+  const promo = document.getElementById("exceptionPromoFilter").value;
+  const fromDate = document.getElementById("exceptionFromDate").value;
+  const toDate = document.getElementById("exceptionToDate").value;
+
+  return lastExceptionFlags
+    .filter((f) => exceptionFilterType === "all" || f.type === exceptionFilterType)
+    .filter((f) => !promo || f.promotion === promo)
+    .filter((f) => !fromDate || f.date >= fromDate)
+    .filter((f) => !toDate || f.date <= toDate)
+    .sort((a, b) => SEVERITY_RANK[FLAG_TYPES[a.type].severity] - SEVERITY_RANK[FLAG_TYPES[b.type].severity] || a.date.localeCompare(b.date));
 }
 
 function renderExceptionTable() {
   const tbody = document.getElementById("exceptionTableBody");
   tbody.textContent = "";
 
-  const filtered = lastExceptionFlags
-    .filter((f) => exceptionFilterType === "all" || f.type === exceptionFilterType)
-    .sort((a, b) => SEVERITY_RANK[FLAG_TYPES[a.type].severity] - SEVERITY_RANK[FLAG_TYPES[b.type].severity] || a.date.localeCompare(b.date));
-
+  const filtered = filteredExceptions();
   const shown = filtered.slice(0, MAX_EXCEPTION_ROWS);
   shown.forEach((f) => {
     const sev = FLAG_TYPES[f.type].severity;
@@ -484,6 +540,9 @@ function renderExceptionTable() {
     wrap.appendChild(label);
     flagCell.appendChild(wrap);
 
+    const actionTextCell = document.createElement("td");
+    actionTextCell.textContent = ACTION_BY_FLAG[f.type];
+
     const storeCell = document.createElement("td");
     storeCell.textContent = f.storeId;
     const productCell = document.createElement("td");
@@ -493,15 +552,15 @@ function renderExceptionTable() {
     const detailCell = document.createElement("td");
     detailCell.textContent = f.detail;
 
-    const actionCell = document.createElement("td");
+    const viewCell = document.createElement("td");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "link-button";
     btn.textContent = "View";
     btn.addEventListener("click", () => jumpToSeries(f.storeId, f.productId));
-    actionCell.appendChild(btn);
+    viewCell.appendChild(btn);
 
-    tr.append(flagCell, storeCell, productCell, dateCell, detailCell, actionCell);
+    tr.append(flagCell, actionTextCell, storeCell, productCell, dateCell, detailCell, viewCell);
     tbody.appendChild(tr);
   });
 
@@ -509,6 +568,23 @@ function renderExceptionTable() {
   hint.textContent = filtered.length > shown.length
     ? `Showing first ${shown.length.toLocaleString()} of ${filtered.length.toLocaleString()} — narrow the filter to see more.`
     : "";
+}
+
+function exportFilteredExceptions() {
+  const rows = filteredExceptions();
+  const header = ["id", "store_id", "product_id", "date", "promotion", "flag", "severity", "action", "detail"];
+  const csvLines = [header.join(",")];
+  rows.forEach((f) => {
+    const cells = [f.id, f.storeId, f.productId, f.date, f.promotion, f.type, FLAG_TYPES[f.type].severity, ACTION_BY_FLAG[f.type], f.detail];
+    csvLines.push(cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","));
+  });
+  const blob = new Blob([csvLines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "exception_rows.csv";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ---------- Holiday matching ----------
@@ -548,6 +624,14 @@ function addDays(dateStr, n) {
   return dt.toISOString().slice(0, 10);
 }
 
+// Payday dates aren't in any data file — Gustavo/Sanne flagged the 3rd and
+// 18th of each month as operationally visible in-store even though it's not
+// a field in the extracts.
+function isPayday(dateStr) {
+  const day = +dateStr.slice(8, 10);
+  return day === 3 || day === 18;
+}
+
 function svgEl(tag, attrs) {
   const el = document.createElementNS(SVG_NS, tag);
   for (const k in attrs) el.setAttribute(k, attrs[k]);
@@ -566,16 +650,26 @@ function renderChart(storeId, productId) {
     return;
   }
 
-  const rows = points.map((pt) => ({
-    ...pt,
-    sub: state.submissionById ? state.submissionById.get(pt.id) : null,
-    base: state.baselineById.get(pt.id),
-  }));
+  const history = (state.historyIndex.get(storeId + "|" + productId) || [])
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const rows = [
+    ...history.map((h) => ({ date: h.date, promotion: h.promotion, actual: h.sales_count, sub: null, base: null })),
+    ...points.map((pt) => ({
+      ...pt,
+      sub: state.submissionById ? state.submissionById.get(pt.id) : null,
+      base: state.baselineById.get(pt.id),
+      actual: null,
+    })),
+  ];
+  const forecastStartIdx = history.length;
 
   let yMax = 0;
   rows.forEach((r) => {
     if (r.sub) yMax = Math.max(yMax, r.sub.p95);
     if (r.base) yMax = Math.max(yMax, r.base.p95);
+    if (r.actual !== null) yMax = Math.max(yMax, r.actual);
   });
   yMax = niceMax(yMax * 1.1);
 
@@ -596,13 +690,27 @@ function renderChart(storeId, productId) {
   // x axis baseline
   svg.appendChild(svgEl("line", { x1: MARGIN.left, x2: WIDTH - MARGIN.right, y1: MARGIN.top + PLOT_H, y2: MARGIN.top + PLOT_H, stroke: "var(--axis)", "stroke-width": 1 }));
 
-  // x tick labels, every 4th date
+  // x tick labels — spread out so a longer history+forecast range doesn't crowd
+  const labelStep = Math.max(1, Math.ceil(rows.length / 10));
   rows.forEach((r, i) => {
-    if (i % 4 !== 0 && i !== rows.length - 1) return;
+    if (i % labelStep !== 0 && i !== rows.length - 1) return;
     const label = svgEl("text", { x: x(i), y: MARGIN.top + PLOT_H + 18, "text-anchor": "middle", fill: "var(--text-muted)", "font-size": 11 });
     label.textContent = formatDate(r.date);
     svg.appendChild(label);
   });
+
+  // payday ticks — routine, so a small mark on the axis rather than a full dashed line
+  rows.forEach((r, i) => {
+    if (!isPayday(r.date)) return;
+    const gx = x(i), gy = MARGIN.top + PLOT_H;
+    svg.appendChild(svgEl("line", { x1: gx, x2: gx, y1: gy, y2: gy + 5, stroke: "var(--text-muted)", "stroke-width": 1.5 }));
+  });
+
+  // forecast-start divider
+  if (forecastStartIdx > 0 && forecastStartIdx < rows.length) {
+    const gx = x(forecastStartIdx);
+    svg.appendChild(svgEl("line", { x1: gx, x2: gx, y1: MARGIN.top, y2: MARGIN.top + PLOT_H, stroke: "var(--axis)", "stroke-width": 1, "stroke-dasharray": "1,3" }));
+  }
 
   // holiday markers
   const store = state.stores.get(storeId);
@@ -625,6 +733,17 @@ function renderChart(storeId, productId) {
     label.textContent = ev.event_type;
     svg.appendChild(label);
   });
+
+  // recent actual sales — neutral ink, not a categorical hue (it's reference
+  // context, not a series competing with submission/baseline)
+  const withActual = rows.map((r, i) => ({ i, r })).filter(({ r }) => r.actual !== null);
+  if (withActual.length > 0) {
+    const actualPath = linePathFor(withActual, x, y, (r) => r.actual);
+    svg.appendChild(svgEl("path", { d: actualPath, fill: "none", stroke: "var(--text-secondary)", "stroke-width": 1.5 }));
+    withActual.forEach(({ i, r }) => {
+      svg.appendChild(svgEl("circle", { cx: x(i), cy: y(r.actual), r: 2.5, fill: "var(--text-secondary)" }));
+    });
+  }
 
   // submission band + line
   if (state.submissionById) {
@@ -693,7 +812,10 @@ function showTooltip(tooltip, r, holiday, left, top) {
   tooltip.textContent = "";
   const dateRow = document.createElement("div");
   dateRow.className = "tt-date";
-  dateRow.textContent = r.date + (r.promotion === "True" ? " · promotion" : "") + (holiday ? ` · ${holiday.event_type}` : "");
+  dateRow.textContent = r.date +
+    (r.promotion === "True" ? " · promotion" : "") +
+    (holiday ? ` · ${holiday.event_type}` : "") +
+    (isPayday(r.date) ? " · payday" : "");
   tooltip.appendChild(dateRow);
 
   function addRow(color, label, value) {
@@ -723,6 +845,9 @@ function showTooltip(tooltip, r, holiday, left, top) {
   if (r.base) {
     addRow("var(--series-2)", "Baseline P50", Math.round(r.base.p50));
   }
+  if (r.actual !== null && r.actual !== undefined) {
+    addRow("var(--text-secondary)", "Actual sales", r.actual + (r.actual === 0 ? " (zero ≠ proven no demand)" : ""));
+  }
 
   tooltip.style.left = (left + 12) + "px";
   tooltip.style.top = (top + 12) + "px";
@@ -735,6 +860,7 @@ function renderLegend() {
   const items = [
     { swatch: "line", color: "var(--series-1)", label: "Submission (P50, P25–P95 band)" },
     { swatch: "dashed", color: "var(--series-2)", label: "Baseline P50" },
+    { swatch: "line", color: "var(--text-secondary)", label: `Actual sales, last ${HISTORY_LOOKBACK_DAYS}d` },
     { swatch: "dot", color: "var(--series-3)", label: "Promotion day" },
   ];
   items.forEach((it) => {
@@ -795,7 +921,7 @@ if (typeof document !== "undefined") {
 // Exposed for the self-check in test_app.js — no effect in the browser.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    splitCSVLine, eventAppliesToStore, niceMax, formatDate, addDays,
-    validateAndIndexSubmission, scanExceptions, FLAG_TYPES, state,
+    splitCSVLine, eventAppliesToStore, niceMax, formatDate, addDays, isPayday,
+    validateAndIndexSubmission, scanExceptions, FLAG_TYPES, ACTION_BY_FLAG, state,
   };
 }

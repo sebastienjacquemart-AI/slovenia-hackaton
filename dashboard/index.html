@@ -23,22 +23,44 @@
 </div>
 
 <div class="card" id="exceptionsCard" style="display:none">
-  <div class="row" style="justify-content:space-between; align-items:baseline;">
-    <strong id="exceptionsSummary"></strong>
-    <div class="field" style="min-width:260px;">
-      <label for="exceptionFilter">Filter</label>
-      <select id="exceptionFilter"></select>
+  <details id="exceptionsDetails">
+    <summary id="exceptionsSummary">Loading exceptions…</summary>
+    <div class="row" style="margin-top:12px; align-items:flex-end;">
+      <div class="field">
+        <label for="exceptionFilter">Flag type</label>
+        <select id="exceptionFilter"></select>
+      </div>
+      <div class="field">
+        <label for="exceptionPromoFilter">Promotion</label>
+        <select id="exceptionPromoFilter">
+          <option value="">All</option>
+          <option value="True">Promoted only</option>
+          <option value="False">Non-promoted only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="exceptionFromDate">From date</label>
+        <input type="date" id="exceptionFromDate">
+      </div>
+      <div class="field">
+        <label for="exceptionToDate">To date</label>
+        <input type="date" id="exceptionToDate">
+      </div>
+      <div class="field">
+        <label for="exportExceptionsBtn" class="hint">&nbsp;</label>
+        <button type="button" class="link-button" id="exportExceptionsBtn">Export CSV</button>
+      </div>
     </div>
-  </div>
-  <div class="table-wrap">
-    <table class="exception-table" id="exceptionTable">
-      <thead>
-        <tr><th>Flag</th><th>Store</th><th>Product</th><th>Date</th><th>Detail</th><th></th></tr>
-      </thead>
-      <tbody id="exceptionTableBody"></tbody>
-    </table>
-  </div>
-  <div class="hint" id="exceptionMoreHint"></div>
+    <div class="table-wrap">
+      <table class="exception-table" id="exceptionTable">
+        <thead>
+          <tr><th>Flag</th><th>Action</th><th>Store</th><th>Product</th><th>Date</th><th>Detail</th><th></th></tr>
+        </thead>
+        <tbody id="exceptionTableBody"></tbody>
+      </table>
+    </div>
+    <div class="hint" id="exceptionMoreHint"></div>
+  </details>
 </div>
 
 <div class="card row" style="align-items:flex-start;">
@@ -74,6 +96,7 @@
   <svg id="chart" width="820" height="340" viewBox="0 0 820 340"></svg>
   <div id="tooltip"></div>
   <div class="legend" id="legend"></div>
+  <div class="hint">A tick below the axis marks payday (3rd/18th). A zero in "Actual sales" means no units were recorded sold — it doesn't prove there was no demand (could be a stockout, poor placement, etc.).</div>
 </div>
 
 <script src="app.js"></script>

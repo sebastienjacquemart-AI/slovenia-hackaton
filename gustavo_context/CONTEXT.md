@@ -344,3 +344,31 @@ large deviations from `predictions_baseline.csv`. "Store-product looks
 unusually different from that store's normal behaviour" and duplicate-
 forecast detection ("my shops are not photocopies") are not implemented —
 they'd need a cross-series baseline of "normal" that v1/v2 don't build.
+
+**v3 shipped (2026-09-10), closing the gaps against Sanne/Gustavo's
+front-end brief above:**
+- Store/product dropdowns replaced with searchable, filterable pick lists
+  (city/cluster/format; family/class/perishability).
+- Chart now overlays the last 30 days of `data/sales_history.csv` as a
+  neutral-toned actuals line ahead of the forecast, with a persistent
+  "zero ≠ proven no demand" caveat and a per-point tooltip note on zeros.
+- Payday (3rd/18th) shown as a small axis tick — deliberately subtle,
+  unlike the holiday dashed lines, since it's routine not exceptional.
+- Two more exception checks, generalized beyond perishables/staples:
+  `zero_forecast` (any product, not just staples) and `wide_spread`
+  (P95−P25 spread unusually wide relative to P50, for any product) — this
+  covers Gustavo's "high-uncertainty wine/premium lines" checklist item
+  that v2 didn't reach.
+- Exceptions table gained promotion and date-range filters, an "Action"
+  column (`ACTION_BY_FLAG` — replenishment / promotion readiness /
+  calendar readiness / manager review / data integrity) as a lightweight
+  stand-in for a separate action view, and a CSV export of the current
+  filtered rows.
+- UX fix: the exceptions panel is now a collapsed `<details>` showing only
+  the flag-count summary until clicked — team feedback was that the full
+  table on load was too much at once ("if every row screams, none of them
+  does").
+- Still not built: the Colombia map (discussed, deprioritized — most
+  effort for the least explicitly-requested payoff), and "store-product
+  looks unusually different from that store's normal behaviour" /
+  duplicate-forecast detection from v2's gap list.

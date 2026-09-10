@@ -1,7 +1,18 @@
 // Minimal self-check for the non-trivial logic in app.js (CSV quoting,
 // monotonicity validation, holiday scope matching). Run: node test_app.js
 const assert = require("assert");
-const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExceptions, state } = require("./app.js");
+const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExceptions, isPayday, FLAG_TYPES, ACTION_BY_FLAG, state } = require("./app.js");
+
+// Payday dates (3rd/18th of any month).
+assert.strictEqual(isPayday("2026-07-03"), true);
+assert.strictEqual(isPayday("2026-07-18"), true);
+assert.strictEqual(isPayday("2026-07-04"), false);
+
+// Every flag type has an action mapped to it — the exceptions table renders
+// ACTION_BY_FLAG[f.type] unconditionally, so a gap here would render "undefined".
+Object.keys(FLAG_TYPES).forEach((type) => {
+  assert.ok(ACTION_BY_FLAG[type], `missing ACTION_BY_FLAG entry for ${type}`);
+});
 
 // CSV parsing: plain line and a quoted field with an embedded comma
 // (matches the real row in gustavo_context/item_catalogue.csv).
@@ -70,5 +81,24 @@ state.submissionById = subMap;
 flags = scanExceptions();
 assert.ok(flags.some((f) => f.type === "promo_no_lift" && f.id === "t5"));
 assert.ok(flags.some((f) => f.type === "holiday_flat" && f.id === "t4"));
+
+// Exception scanning: zero-forecast + wide-spread for a non-staple product
+// (these must NOT be gated to staple families / perishables the way
+// essential_low / perishable_spike are).
+state.products.set("P3", { product_family: "LIQUOR,WINE,BEER", product_class: "1", is_perishable: "0" });
+state.testById.set("t6", { date: "2026-07-10", store_id: "S1", product_id: "P3", promotion: "False" });
+state.testById.set("t7", { date: "2026-07-11", store_id: "S1", product_id: "P3", promotion: "False" });
+state.seriesIndex.set("S1|P3", [
+  { id: "t6", date: "2026-07-10", promotion: "False" },
+  { id: "t7", date: "2026-07-11", promotion: "False" },
+]);
+subMap.set("t6", { p25: 0, p50: 0, p75: 0, p95: 5 });   // zero median, non-staple family
+subMap.set("t7", { p25: 0, p50: 2, p75: 10, p95: 30 }); // spread 30 >> 2.5 * p50
+state.submissionById = subMap;
+
+flags = scanExceptions();
+assert.ok(flags.some((f) => f.type === "zero_forecast" && f.id === "t6"));
+assert.ok(!flags.some((f) => f.type === "essential_low" && f.id === "t6"));
+assert.ok(flags.some((f) => f.type === "wide_spread" && f.id === "t7"));
 
 console.log("All self-checks passed.");

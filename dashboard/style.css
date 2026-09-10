@@ -141,6 +141,13 @@ select, input[type="file"] {
 .status-critical .status-icon { color: var(--status-critical); }
 .status-info .status-icon { color: var(--text-muted); }
 
+#exceptionsDetails summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style-position: outside;
+}
+#exceptionsDetails summary::marker { color: var(--text-muted); }
+
 .table-wrap { overflow-x: auto; margin-top: 12px; }
 .exception-table { border-collapse: collapse; width: 100%; font-size: 12px; }
 .exception-table th, .exception-table td {
