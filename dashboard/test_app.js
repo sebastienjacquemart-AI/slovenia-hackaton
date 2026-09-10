@@ -1,7 +1,7 @@
 // Minimal self-check for the non-trivial logic in app.js (CSV quoting,
 // monotonicity validation, holiday scope matching). Run: node test_app.js
 const assert = require("assert");
-const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExceptions, isPayday, FLAG_TYPES, ACTION_BY_FLAG, parseShapCsv, state } = require("./app.js");
+const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExceptions, isPayday, FLAG_TYPES, ACTION_BY_FLAG, parseShapCsv, computeRollups, state } = require("./app.js");
 
 // SHAP CSV parsing (format written by scripts/export_shap_for_dashboard.py):
 // nested by id -> quantile -> {base, prediction, contribs}, and bucket sums
@@ -117,5 +117,38 @@ flags = scanExceptions();
 assert.ok(flags.some((f) => f.type === "zero_forecast" && f.id === "t6"));
 assert.ok(!flags.some((f) => f.type === "essential_low" && f.id === "t6"));
 assert.ok(flags.some((f) => f.type === "wide_spread" && f.id === "t7"));
+
+// promo_zero_history: a promoted day in the loaded history window with 0
+// actual sales should be flagged as a warning — not a confirmed stockout.
+state.stores.set("S2", { city: "TestCity2", department: "TestDept2", store_type: "B", store_cluster: "2" });
+state.products.set("P4", { product_family: "DAIRY", product_class: "1", is_perishable: "0" });
+state.testById.set("t8", { date: "2026-07-10", store_id: "S2", product_id: "P4", promotion: "False" });
+state.seriesIndex.set("S2|P4", [{ id: "t8", date: "2026-07-10", promotion: "False" }]);
+state.historyIndex.set("S2|P4", [
+  { date: "2026-06-20", sales_count: 0, promotion: "True" }, // promoted zero -> flag
+  { date: "2026-06-21", sales_count: 5, promotion: "True" }, // promoted, sold fine -> no flag
+]);
+subMap.set("t8", { p25: 1, p50: 2, p75: 3, p95: 4 });
+state.submissionById = subMap;
+
+flags = scanExceptions();
+const pzh = flags.filter((f) => f.type === "promo_zero_history" && f.storeId === "S2" && f.productId === "P4");
+assert.strictEqual(pzh.length, 1);
+assert.strictEqual(pzh[0].date, "2026-06-20");
+assert.strictEqual(FLAG_TYPES.promo_zero_history.severity, "warning");
+
+// computeRollups: store and store×product totals/exception counts roll up
+// correctly — checked against the isolated S2/P4 fixture above.
+computeRollups(flags);
+const s2 = state.storeRollups.get("S2");
+assert.strictEqual(s2.totalP50, 2);
+assert.strictEqual(s2.totalP95, 4);
+assert.ok(s2.exceptions >= 1);
+const s2p4 = state.productRollups.get("S2").get("P4");
+assert.strictEqual(s2p4.sumP50, 2);
+assert.strictEqual(s2p4.minP25, 1);
+assert.strictEqual(s2p4.maxP95, 4);
+const estateP4 = state.productRollups.get("estate").get("P4");
+assert.strictEqual(estateP4.sumP50, 2);
 
 console.log("All self-checks passed.");

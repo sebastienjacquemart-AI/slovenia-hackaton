@@ -165,10 +165,14 @@ select, input[type="file"] {
   width: 16px;
   text-align: center;
 }
+/* One strong alert colour reserved for genuinely important cases — critical.
+   warning/info stay neutral ink so they read as routine, not alarming
+   ("a supermarket control room, not a children's birthday party"). */
 .status-good .status-icon { color: var(--status-good); }
-.status-warning .status-icon { color: var(--status-warning); }
-.status-critical .status-icon { color: var(--status-critical); }
+.status-warning .status-icon { color: var(--text-secondary); }
+.status-critical .status-icon { color: var(--status-critical); font-weight: 800; }
 .status-info .status-icon { color: var(--text-muted); }
+.alert-text { color: var(--status-critical); font-weight: 600; }
 
 .table-wrap { overflow-x: auto; margin-top: 12px; }
 .exception-table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -179,10 +183,14 @@ select, input[type="file"] {
   white-space: nowrap;
 }
 .exception-table th { color: var(--text-secondary); font-weight: 600; }
-.exception-table td:nth-child(1) { white-space: normal; min-width: 220px; }
-.exception-table td:nth-child(5) { white-space: normal; min-width: 240px; color: var(--text-secondary); font-size: 11px; }
+#exceptionTable td:nth-child(1) { white-space: normal; min-width: 220px; }
+#exceptionTable td:nth-child(5) { white-space: normal; min-width: 240px; color: var(--text-secondary); font-size: 11px; }
 .exception-table .status-item { margin-top: 4px; font-size: 11px; }
 .exception-row:hover { background: var(--grid); }
+.promo-row { background: color-mix(in srgb, var(--series-3) 10%, transparent); }
+.promo-row:hover { background: color-mix(in srgb, var(--series-3) 18%, transparent); }
+.fresh-row td:first-child { border-left: 3px solid var(--status-good); }
+#storeRollupTable td:nth-child(8), #productRollupTable td:nth-child(6) { white-space: normal; min-width: 200px; }
 
 .link-button {
   font: inherit;

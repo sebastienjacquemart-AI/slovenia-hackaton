@@ -12,6 +12,8 @@
 
 <nav class="tab-nav" id="tabNav">
   <button type="button" class="tab-btn" data-tab="overview">Upload</button>
+  <button type="button" class="tab-btn" data-tab="stores">Stores</button>
+  <button type="button" class="tab-btn" data-tab="products">Products</button>
   <button type="button" class="tab-btn" data-tab="exceptions">Exceptions</button>
   <button type="button" class="tab-btn" data-tab="forecasts">Forecasts</button>
 </nav>
@@ -43,6 +45,43 @@
   <div class="card" id="overviewSummaryCard" style="display:none">
     <div id="overviewSummaryText"></div>
     <button type="button" class="link-button" id="goToExceptionsBtn" style="margin-top:10px;">Review exceptions →</button>
+  </div>
+
+</section>
+
+<section class="tab-panel" id="tab-stores" hidden>
+
+  <p class="hint" style="margin:0 0 12px;">Estate summary — where you need to act, and how much stock exposure is behind it. Click a store to drill into its products.</p>
+  <div class="row" style="margin-bottom:10px;">
+    <div class="field">
+      <label for="storeSortBy">Sort by</label>
+      <select id="storeSortBy">
+        <option value="risk">Risk (alerts first)</option>
+        <option value="exposure">Demand exposure (total units)</option>
+      </select>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="exception-table" id="storeRollupTable">
+      <thead>
+        <tr><th>Store</th><th>City</th><th>Format</th><th>Cluster</th><th>Expected units (ΣP50)</th><th>Exposure, worst case (ΣP95)</th><th>Alerts</th><th>Highest-risk products</th><th></th></tr>
+      </thead>
+      <tbody id="storeRollupBody"></tbody>
+    </table>
+  </div>
+
+</section>
+
+<section class="tab-panel" id="tab-products" hidden>
+
+  <p class="hint" id="productsScopeHint" style="margin:0 0 12px;"></p>
+  <div class="table-wrap">
+    <table class="exception-table" id="productRollupTable">
+      <thead>
+        <tr><th>Product</th><th>Family</th><th>Class</th><th>Fresh</th><th>Promoted</th><th>Forecast range (P25–P95)</th><th>Alerts</th><th></th></tr>
+      </thead>
+      <tbody id="productRollupBody"></tbody>
+    </table>
   </div>
 
 </section>
@@ -126,7 +165,15 @@
     <svg id="chart" width="820" height="340" viewBox="0 0 820 340"></svg>
     <div id="tooltip"></div>
     <div class="legend" id="legend"></div>
-    <div class="hint">A tick below the axis marks payday (3rd/18th). A zero in "Actual sales" means no units were recorded sold — it doesn't prove there was no demand (could be a stockout, poor placement, etc.).</div>
+    <div class="hint">A tick below the axis marks payday (3rd/18th). Shaded bands mark the day before a holiday. A zero in "Actual sales" means no units were recorded sold — it doesn't prove there was no demand (could be a stockout, poor placement, etc.).</div>
+    <div class="table-wrap" style="margin-top:14px;">
+      <table class="exception-table" id="forecastRowTable">
+        <thead>
+          <tr><th>Date</th><th>Promotion</th><th>Actual (recent)</th><th>Store traffic</th><th>P25</th><th>P50</th><th>P75</th><th>P95</th></tr>
+        </thead>
+        <tbody id="forecastRowBody"></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card chart-wrap" id="shapCard" style="display:none">

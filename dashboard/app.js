@@ -13,30 +13,37 @@ const STAPLE_FAMILIES = new Set([
   "PERSONAL CARE", "GROCERY I", "POULTRY", "PRODUCE",
 ]);
 
+// Severity now drives a single reserved alert colour, not a 3-hue traffic
+// light (Gustavo: "one strong alert colour for genuinely important cases —
+// not a children's birthday party"). "critical" = the three cases he named
+// explicitly (wide uncertainty, sharp changes, weak promoted performance)
+// plus data-integrity errors; everything else is a quieter, neutral note.
 const FLAG_TYPES = {
   monotonicity: { label: "Numbers don't add up", severity: "critical" },
+  wide_spread: { label: "Unusually wide uncertainty", severity: "critical" },
+  baseline_deviation: { label: "Sharp change from the usual model", severity: "critical" },
+  promo_no_lift: { label: "Weak promoted performance", severity: "critical" },
   perishable_spike: { label: "Perishable item, big swing possible", severity: "warning" },
-  promo_no_lift: { label: "Promotion with no expected boost", severity: "warning" },
   holiday_flat: { label: "Holiday treated like a normal day", severity: "warning" },
   essential_low: { label: "Everyday item forecast at zero", severity: "warning" },
+  promo_zero_history: { label: "Promoted day sold zero, recently", severity: "warning" },
   zero_forecast: { label: "Forecast is zero", severity: "info" },
-  wide_spread: { label: "Very uncertain forecast", severity: "info" },
-  baseline_deviation: { label: "Big change from the usual model", severity: "info" },
 };
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
-const SEVERITY_LABEL = { critical: "Fix now", warning: "Worth a look", info: "For your info" };
+const SEVERITY_LABEL = { critical: "Alert", warning: "Review", info: "Note" };
 
 // What a reviewer should actually do about each flag — Gustavo's "practical
 // action view" ask, folded into the exceptions table rather than a second page.
 const ACTION_BY_FLAG = {
   monotonicity: "Data problem — fix or reject before using this row",
-  perishable_spike: "Perishable item — double-check you won't overstock",
-  promo_no_lift: "Check this promotion — no sales boost is expected",
-  holiday_flat: "Check holiday staffing & stock — forecast doesn't reflect the holiday",
-  essential_low: "Everyday item — confirm zero is right before it runs out",
-  zero_forecast: "Double-check: is zero really expected here?",
   wide_spread: "Uncertain forecast — use your judgement, not just the number",
   baseline_deviation: "Double-check this — it's very different from the usual model",
+  promo_no_lift: "Check this promotion — no sales boost is expected",
+  perishable_spike: "Perishable item — double-check you won't overstock",
+  holiday_flat: "Check holiday staffing & stock — forecast doesn't reflect the holiday",
+  essential_low: "Everyday item — confirm zero is right before it runs out",
+  promo_zero_history: "Not a confirmed stockout — flagged for review, check before assuming no demand",
+  zero_forecast: "Double-check: is zero really expected here?",
 };
 
 const HISTORY_LOOKBACK_DAYS = 30;
@@ -49,8 +56,12 @@ const state = {
   seriesIndex: new Map(),   // "store|product" -> [{id, date, promotion}, ...] chronological
   baselineById: new Map(),  // id -> {p25,p50,p75,p95}
   historyIndex: new Map(),  // "store|product" -> [{date, sales_count, promotion}, ...], last HISTORY_LOOKBACK_DAYS only
+  trafficIndex: new Map(),  // store_id -> Map(date -> transaction_count)
   submissionById: null,     // id -> {p25,p50,p75,p95}, set once a file is loaded
   shapIndex: new Map(),     // id -> Map("0.25"|"0.5"|"0.75"|"0.95" -> {base, prediction, contribs: {bucket: value}})
+  storeRollups: new Map(),  // store_id -> {totalP50, totalP95, exceptions, critical}, built by computeRollups()
+  productRollups: new Map(),// "estate"|store_id -> Map(product_id -> {sumP50, minP25, maxP95, anyPromo, exceptions})
+  focusedStoreId: null,     // drill-down: Stores tab -> Products tab scope; null = estate-wide
 };
 
 // Matches the bucket names written by scripts/export_shap_for_dashboard.py —
@@ -114,10 +125,11 @@ async function loadText(path) {
 // ---------- Loading context data ----------
 
 async function loadContext() {
-  const [storeTxt, itemTxt, eventsTxt] = await Promise.all([
+  const [storeTxt, itemTxt, eventsTxt, trafficTxt] = await Promise.all([
     loadText("../gustavo_context/store_info.csv"),
     loadText("../gustavo_context/item_catalogue.csv"),
     loadText("../gustavo_context/events_and_holidays.csv"),
+    loadText("../gustavo_context/store_traffic.csv"),
   ]);
 
   forEachRow(storeTxt, (f) => {
@@ -128,6 +140,12 @@ async function loadContext() {
   });
   forEachRow(eventsTxt, (f) => {
     state.events.push({ date: f[0], event_type: f[1], scope: f[2], location: f[3], is_transferred: f[4] });
+  });
+  forEachRow(trafficTxt, (f) => {
+    const [date, storeId, transactionCount] = f;
+    let byDate = state.trafficIndex.get(storeId);
+    if (!byDate) { byDate = new Map(); state.trafficIndex.set(storeId, byDate); }
+    byDate.set(date, +transactionCount);
   });
 
   const testTxt = await loadText("../data/test.csv");
@@ -290,12 +308,31 @@ function buildSeriesStats(holidaySetsByStore) {
   return stats;
 }
 
+const WIDE_SPREAD_PERCENTILE = 0.95;
+
+// Real quantile forecasts on sparse grocery demand are wide by default —
+// the median P25-P95 spread relative to P50 in a real submission run was
+// already ~3x, so a fixed multiplier flagged 62% of all rows as "critical."
+// "Unusually wide" has to mean unusual *for this submission*, so the
+// threshold is the submission's own top-tail (95th percentile), not a
+// magic constant tuned to one dataset.
+function wideSpreadThreshold() {
+  const ratios = [];
+  for (const sub of state.submissionById.values()) {
+    ratios.push((sub.p95 - sub.p25) / Math.max(sub.p50, 1));
+  }
+  ratios.sort((a, b) => a - b);
+  const idx = Math.min(ratios.length - 1, Math.floor(ratios.length * WIDE_SPREAD_PERCENTILE));
+  return ratios[idx];
+}
+
 function scanExceptions() {
   const flags = [];
   if (!state.submissionById) return flags;
 
   const holidaySetsByStore = buildHolidayAdjacentSetsByStore();
   const seriesStats = buildSeriesStats(holidaySetsByStore);
+  const wideSpreadCutoff = wideSpreadThreshold();
 
   for (const [id, sub] of state.submissionById) {
     const t = state.testById.get(id);
@@ -337,8 +374,8 @@ function scanExceptions() {
       }
     }
 
-    if (sub.p95 - sub.p25 >= 2.5 * Math.max(sub.p50, 1)) {
-      addFlag("wide_spread", `Could be anywhere from ${sub.p25} to ${sub.p95} around a typical estimate of ${sub.p50} — a wide range`);
+    if ((sub.p95 - sub.p25) / Math.max(sub.p50, 1) >= wideSpreadCutoff) {
+      addFlag("wide_spread", `Could be anywhere from ${sub.p25} to ${sub.p95} around a typical estimate of ${sub.p50} — unusually wide even for this submission`);
     }
 
     const base = state.baselineById.get(id);
@@ -350,7 +387,237 @@ function scanExceptions() {
     }
   }
 
+  // Promoted day, zero units actually sold — in the recent history window
+  // (last HISTORY_LOOKBACK_DAYS, same window the chart overlays). Not
+  // treated as a stockout, just surfaced for a human to check.
+  for (const [key, points] of state.seriesIndex) {
+    const [storeId, productId] = key.split("|");
+    const history = state.historyIndex.get(key);
+    if (!history) continue;
+    history.forEach((h) => {
+      if (h.promotion === "True" && h.sales_count === 0) {
+        flags.push({
+          id: null, storeId, productId, date: h.date, promotion: "True",
+          type: "promo_zero_history",
+          detail: `Promoted on ${h.date}, but 0 units sold — worth checking before assuming no demand`,
+        });
+      }
+    });
+  }
+
   return flags;
+}
+
+// ---------- Store/product rollups (control-room views) ----------
+
+// One pass over the submission + exception flags to build the estate-level
+// numbers the Stores and Products tabs need: total forecast exposure and
+// exception counts, rolled up by store and by store×product.
+function computeRollups(flags) {
+  const storeRollups = new Map();   // store_id -> {totalP50, totalP95, exceptions, critical}
+  const byStoreProduct = new Map(); // "store|product" -> {sumP50, minP25, maxP95, anyPromo, exceptions, critical}
+
+  function storeRow(storeId) {
+    let r = storeRollups.get(storeId);
+    if (!r) { r = { totalP50: 0, totalP95: 0, exceptions: 0, critical: 0 }; storeRollups.set(storeId, r); }
+    return r;
+  }
+  function spRow(key) {
+    let r = byStoreProduct.get(key);
+    if (!r) { r = { sumP50: 0, minP25: Infinity, maxP95: -Infinity, anyPromo: false, exceptions: 0, critical: 0 }; byStoreProduct.set(key, r); }
+    return r;
+  }
+
+  for (const [id, sub] of state.submissionById) {
+    const t = state.testById.get(id);
+    if (!t) continue;
+    const key = t.store_id + "|" + t.product_id;
+    const s = storeRow(t.store_id);
+    s.totalP50 += sub.p50;
+    s.totalP95 += sub.p95;
+    const sp = spRow(key);
+    sp.sumP50 += sub.p50;
+    sp.minP25 = Math.min(sp.minP25, sub.p25);
+    sp.maxP95 = Math.max(sp.maxP95, sub.p95);
+    if (t.promotion === "True") sp.anyPromo = true;
+  }
+
+  flags.forEach((f) => {
+    const sev = FLAG_TYPES[f.type].severity;
+    storeRow(f.storeId).exceptions++;
+    if (sev === "critical") storeRow(f.storeId).critical++;
+    const sp = spRow(f.storeId + "|" + f.productId);
+    sp.exceptions++;
+    if (sev === "critical") sp.critical++;
+  });
+
+  // roll store×product up to an estate-wide per-product view (summed
+  // across all stores), for the Products tab when no store is focused
+  const productRollups = new Map([["estate", new Map()]]);
+  for (const [key, sp] of byStoreProduct) {
+    const [storeId, productId] = key.split("|");
+    let perStore = productRollups.get(storeId);
+    if (!perStore) { perStore = new Map(); productRollups.set(storeId, perStore); }
+    perStore.set(productId, sp);
+
+    const estate = productRollups.get("estate");
+    let e = estate.get(productId);
+    if (!e) { e = { sumP50: 0, minP25: Infinity, maxP95: -Infinity, anyPromo: false, exceptions: 0, critical: 0 }; estate.set(productId, e); }
+    e.sumP50 += sp.sumP50;
+    e.minP25 = Math.min(e.minP25, sp.minP25);
+    e.maxP95 = Math.max(e.maxP95, sp.maxP95);
+    e.anyPromo = e.anyPromo || sp.anyPromo;
+    e.exceptions += sp.exceptions;
+    e.critical += sp.critical;
+  }
+
+  state.storeRollups = storeRollups;
+  state.productRollups = productRollups;
+}
+
+function topRiskProducts(storeId) {
+  const perStore = state.productRollups.get(storeId);
+  if (!perStore) return [];
+  return [...perStore.entries()]
+    .filter(([, r]) => r.exceptions > 0)
+    .sort((a, b) => b[1].critical - a[1].critical || b[1].exceptions - a[1].exceptions)
+    .slice(0, 3)
+    .map(([pid]) => {
+      const p = state.products.get(pid);
+      return p ? `${p.product_family} (${pid})` : pid;
+    });
+}
+
+function focusStore(storeId) {
+  state.focusedStoreId = storeId;
+  renderProductsTab();
+  switchTab("products");
+}
+
+let storeSortBy = "risk";
+
+// Estate summary: total expected/exposure units and alert counts per store —
+// the "where do I need to act" answer at a glance. Sorted by risk (alerts)
+// by default so the stores needing attention are on top, not alphabetical.
+function renderStoresTab() {
+  const tbody = document.getElementById("storeRollupBody");
+  if (!tbody) return;
+  tbody.textContent = "";
+
+  const rows = sortedIds(state.stores)
+    .filter((id) => state.storeRollups.has(id))
+    .map((id) => ({ id, s: state.stores.get(id), r: state.storeRollups.get(id) }));
+
+  rows.sort((a, b) => storeSortBy === "risk"
+    ? (b.r.critical - a.r.critical) || (b.r.exceptions - a.r.exceptions)
+    : (b.r.totalP95 - a.r.totalP95));
+
+  rows.forEach(({ id, s, r }) => {
+    const tr = document.createElement("tr");
+    tr.className = "exception-row";
+
+    const cells = [id, s.city, s.store_type, s.store_cluster,
+      Math.round(r.totalP50).toLocaleString(), Math.round(r.totalP95).toLocaleString()]
+      .map((v) => { const td = document.createElement("td"); td.textContent = v; return td; });
+
+    const alertCell = document.createElement("td");
+    if (r.critical > 0) {
+      const chip = document.createElement("span");
+      chip.className = "status-item status-critical";
+      const icon = document.createElement("span");
+      icon.className = "status-icon";
+      icon.textContent = "✕";
+      chip.append(icon, document.createTextNode(`${r.critical} alert${r.critical === 1 ? "" : "s"}`));
+      alertCell.appendChild(chip);
+      if (r.exceptions > r.critical) alertCell.appendChild(document.createTextNode(` · ${r.exceptions - r.critical} more`));
+    } else {
+      alertCell.textContent = r.exceptions > 0 ? `${r.exceptions} to review` : "Clean";
+      alertCell.className = "muted";
+    }
+
+    const topCell = document.createElement("td");
+    topCell.textContent = topRiskProducts(id).join(", ") || "—";
+
+    const viewCell = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "link-button";
+    btn.textContent = "Drill in";
+    btn.addEventListener("click", () => focusStore(id));
+    viewCell.appendChild(btn);
+
+    tr.append(...cells, alertCell, topCell, viewCell);
+    tbody.appendChild(tr);
+  });
+}
+
+// Product view: family, class, perishability, promotion status, and forecast
+// range — scoped to whichever store was drilled into from the Stores tab,
+// or estate-wide if none. Fresh (perishable) items sort first, since
+// shortage and waste both hurt there.
+function renderProductsTab() {
+  const tbody = document.getElementById("productRollupBody");
+  if (!tbody) return;
+  tbody.textContent = "";
+
+  const hint = document.getElementById("productsScopeHint");
+  if (state.focusedStoreId) {
+    const s = state.stores.get(state.focusedStoreId);
+    hint.textContent = "";
+    hint.innerHTML = `Showing <strong>${s.city} (store ${state.focusedStoreId})</strong> — format ${s.store_type}, cluster ${s.store_cluster}. `;
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "link-button";
+    clearBtn.textContent = "Show all stores";
+    clearBtn.addEventListener("click", () => { state.focusedStoreId = null; renderProductsTab(); });
+    hint.appendChild(clearBtn);
+  } else {
+    hint.textContent = "Showing all stores (estate-wide) — drill in from the Stores tab to focus on one store, to compare like with like.";
+  }
+
+  const scope = state.focusedStoreId || "estate";
+  const rollup = state.productRollups.get(scope) || new Map();
+  const rows = [...rollup.entries()]
+    .map(([pid, r]) => ({ pid, p: state.products.get(pid), r }))
+    .filter((row) => row.p);
+
+  rows.sort((a, b) =>
+    (b.p.is_perishable === "1") - (a.p.is_perishable === "1") ||
+    b.r.critical - a.r.critical ||
+    b.r.exceptions - a.r.exceptions);
+
+  rows.forEach(({ pid, p, r }) => {
+    const tr = document.createElement("tr");
+    tr.className = "exception-row";
+    if (p.is_perishable === "1") tr.classList.add("fresh-row");
+
+    const cells = [pid, p.product_family, p.product_class,
+      p.is_perishable === "1" ? "Fresh" : "—",
+      r.anyPromo ? "Promoted" : "—",
+      `${Math.round(r.minP25)}–${Math.round(r.maxP95)} (Σ P50 ${Math.round(r.sumP50).toLocaleString()})`]
+      .map((v) => { const td = document.createElement("td"); td.textContent = v; return td; });
+
+    const alertCell = document.createElement("td");
+    alertCell.textContent = r.critical > 0 ? `${r.critical} alert${r.critical === 1 ? "" : "s"}`
+      : r.exceptions > 0 ? `${r.exceptions} to review` : "Clean";
+    alertCell.className = r.critical > 0 ? "alert-text" : "muted";
+
+    const viewCell = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "link-button";
+    btn.textContent = "View forecast";
+    btn.addEventListener("click", () => {
+      const storeId = state.focusedStoreId ||
+        sortedIds(state.stores).find((sid) => (state.productRollups.get(sid) || new Map()).has(pid)) ||
+        sortedIds(state.stores)[0];
+      jumpToSeries(storeId, pid);
+    });
+    viewCell.appendChild(btn);
+
+    tr.append(...cells, alertCell, viewCell);
+    tbody.appendChild(tr);
+  });
 }
 
 // ---------- Store/product pick lists & info panels ----------
@@ -512,6 +779,7 @@ function renderExceptions() {
   card.style.display = "block";
 
   lastExceptionFlags = scanExceptions();
+  computeRollups(lastExceptionFlags);
 
   const counts = {};
   const bySeverity = { critical: 0, warning: 0, info: 0 };
@@ -523,9 +791,11 @@ function renderExceptions() {
   document.getElementById("exceptionsSummary").textContent = lastExceptionFlags.length === 0
     ? "No exceptions found — this submission looks clean."
     : `${lastExceptionFlags.length.toLocaleString()} row(s) flagged — ` +
-      `${bySeverity.critical} to fix now, ${bySeverity.warning} worth a look, ${bySeverity.info} for your info`;
+      `${bySeverity.critical} alert, ${bySeverity.warning} review, ${bySeverity.info} note`;
 
   renderOverviewSummary(bySeverity);
+  renderStoresTab();
+  renderProductsTab();
 
   const filterSelect = document.getElementById("exceptionFilter");
   filterSelect.textContent = "";
@@ -654,12 +924,19 @@ function exportFilteredExceptions() {
 
 // ---------- Holiday matching ----------
 
-function eventAppliesToStore(event, store) {
-  if (event.is_transferred === "True") return false;
+function eventScopeMatches(event, store) {
   if (event.scope === "National") return true;
   if (event.scope === "Regional") return event.location === store.department;
   if (event.scope === "Local") return event.location === store.city;
   return false;
+}
+
+// Whether an event is a live holiday for demand purposes at this store — a
+// transferred holiday isn't (its date moved elsewhere), even though it's
+// still shown on the chart for calendar context via eventScopeMatches.
+function eventAppliesToStore(event, store) {
+  if (event.is_transferred === "True") return false;
+  return eventScopeMatches(event, store);
 }
 
 // ---------- Chart ----------
@@ -712,6 +989,7 @@ function renderChart(storeId, productId) {
     const empty = svgEl("text", { x: WIDTH / 2, y: HEIGHT / 2, "text-anchor": "middle", fill: "var(--text-muted)" });
     empty.textContent = "No data for this store × product combination.";
     svg.appendChild(empty);
+    renderForecastTable([], storeId);
     return;
   }
 
@@ -777,25 +1055,47 @@ function renderChart(storeId, productId) {
     svg.appendChild(svgEl("line", { x1: gx, x2: gx, y1: MARGIN.top, y2: MARGIN.top + PLOT_H, stroke: "var(--axis)", "stroke-width": 1, "stroke-dasharray": "1,3" }));
   }
 
-  // holiday markers
+  // calendar context — holidays, local/regional events, and transferred
+  // holidays are all shown (scope + location included, so a town event is
+  // never mistaken for a national one). Transferred holidays are shown for
+  // context only — eventAppliesToStore excludes them from the "is this
+  // actually a holiday here" logic used by holiday_flat / the shading below.
   const store = state.stores.get(storeId);
   const rangeStart = rows[0].date, rangeEnd = rows[rows.length - 1].date;
-  const holidaysByDate = new Map();
+  const calendarByDate = new Map();
   state.events.forEach((ev) => {
     if (ev.date < rangeStart || ev.date > rangeEnd) return;
-    if (!eventAppliesToStore(ev, store)) return;
-    holidaysByDate.set(ev.date, ev);
+    if (!eventScopeMatches(ev, store)) return;
+    calendarByDate.set(ev.date, ev);
   });
+
+  // pre-holiday shading — the day leading into a real (non-transferred)
+  // holiday, so the "surrounding period" reads as calendar context, not
+  // just the day itself.
   rows.forEach((r, i) => {
-    const ev = holidaysByDate.get(r.date);
+    if (i === 0) return;
+    const ev = calendarByDate.get(r.date);
+    if (!ev || ev.is_transferred === "True") return;
+    const bandLeft = x(i - 1), bandRight = x(i);
+    svg.appendChild(svgEl("rect", {
+      x: bandLeft, y: MARGIN.top, width: Math.max(1, bandRight - bandLeft), height: PLOT_H,
+      fill: "var(--text-muted)", "fill-opacity": 0.08,
+    }));
+  });
+
+  rows.forEach((r, i) => {
+    const ev = calendarByDate.get(r.date);
     if (!ev) return;
     const gx = x(i);
+    const transferred = ev.is_transferred === "True";
     svg.appendChild(svgEl("line", {
       x1: gx, x2: gx, y1: MARGIN.top, y2: MARGIN.top + PLOT_H,
-      stroke: "var(--text-muted)", "stroke-width": 1, "stroke-dasharray": "3,3",
+      stroke: "var(--text-muted)", "stroke-width": 1,
+      "stroke-dasharray": transferred ? "1,2" : "3,3", "stroke-opacity": transferred ? 0.6 : 1,
     }));
-    const label = svgEl("text", { x: gx, y: MARGIN.top - 8, "text-anchor": "middle", fill: "var(--text-muted)", "font-size": 10 });
-    label.textContent = ev.event_type;
+    const scopeText = ev.scope === "National" ? "National" : `${ev.scope} · ${ev.location}`;
+    const label = svgEl("text", { x: gx, y: MARGIN.top - 8, "text-anchor": "middle", fill: "var(--text-muted)", "font-size": 9 });
+    label.textContent = `${ev.event_type}${transferred ? " (moved)" : ""} · ${scopeText}`;
     svg.appendChild(label);
   });
 
@@ -853,7 +1153,7 @@ function renderChart(storeId, productId) {
     crosshair.setAttribute("x1", x(idx));
     crosshair.setAttribute("x2", x(idx));
     crosshair.setAttribute("visibility", "visible");
-    showTooltip(tooltip, r, holidaysByDate.get(r.date), e.clientX - rect.left, e.clientY - rect.top);
+    showTooltip(tooltip, r, calendarByDate.get(r.date), storeId, e.clientX - rect.left, e.clientY - rect.top);
   });
   hit.addEventListener("pointerleave", () => {
     crosshair.setAttribute("visibility", "hidden");
@@ -861,6 +1161,41 @@ function renderChart(storeId, productId) {
   });
 
   renderLegend();
+  renderForecastTable(rows, storeId);
+}
+
+// Every store×product×date row, P25/P50/P75/P95 always shown in that order
+// — Gustavo: "do not hide the range behind one forecast number." Promoted
+// rows are tinted so they're easy to spot against ordinary days.
+function renderForecastTable(rows, storeId) {
+  const tbody = document.getElementById("forecastRowBody");
+  if (!tbody) return;
+  tbody.textContent = "";
+  const trafficByDate = state.trafficIndex.get(storeId) || new Map();
+
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.className = "exception-row" + (r.promotion === "True" ? " promo-row" : "");
+
+    const dateCell = document.createElement("td");
+    dateCell.textContent = r.date;
+    const promoCell = document.createElement("td");
+    promoCell.textContent = r.promotion === "True" ? "PROMOTION" : "—";
+    const actualCell = document.createElement("td");
+    actualCell.textContent = (r.actual !== null && r.actual !== undefined) ? r.actual : "—";
+    const trafficCell = document.createElement("td");
+    const traffic = trafficByDate.get(r.date);
+    trafficCell.textContent = traffic !== undefined ? traffic.toLocaleString() : "—";
+
+    const quantileCells = ["p25", "p50", "p75", "p95"].map((k) => {
+      const td = document.createElement("td");
+      td.textContent = r.sub ? Math.round(r.sub[k]) : "—";
+      return td;
+    });
+
+    tr.append(dateCell, promoCell, actualCell, trafficCell, ...quantileCells);
+    tbody.appendChild(tr);
+  });
 }
 
 function bandPath(items, x, y, lowFn, highFn) {
@@ -873,15 +1208,22 @@ function linePathFor(items, x, y, valFn) {
   return items.map(({ i, r }, idx) => `${idx === 0 ? "M" : "L"} ${x(i)},${y(valFn(r))}`).join(" ");
 }
 
-function showTooltip(tooltip, r, holiday, left, top) {
+function showTooltip(tooltip, r, calendarEvent, storeId, left, top) {
   tooltip.textContent = "";
   const dateRow = document.createElement("div");
   dateRow.className = "tt-date";
   dateRow.textContent = r.date +
-    (r.promotion === "True" ? " · promotion" : "") +
-    (holiday ? ` · ${holiday.event_type}` : "") +
+    (r.promotion === "True" ? " · PROMOTION" : "") +
     (isPayday(r.date) ? " · payday" : "");
   tooltip.appendChild(dateRow);
+
+  if (calendarEvent) {
+    const scopeText = calendarEvent.scope === "National" ? "National" : `${calendarEvent.scope} · ${calendarEvent.location}`;
+    const evRow = document.createElement("div");
+    evRow.className = "tt-row";
+    evRow.textContent = `${calendarEvent.event_type}${calendarEvent.is_transferred === "True" ? " (moved — not an active holiday here)" : ""} — ${scopeText}`;
+    tooltip.appendChild(evRow);
+  }
 
   function addRow(color, label, value) {
     const row = document.createElement("div");
@@ -904,14 +1246,20 @@ function showTooltip(tooltip, r, holiday, left, top) {
   }
 
   if (r.sub) {
-    addRow("var(--series-1)", "Submission P25–P95", `${Math.round(r.sub.p25)}–${Math.round(r.sub.p95)}`);
-    addRow(null, "Submission P50", Math.round(r.sub.p50));
+    addRow("var(--series-1)", "P25", Math.round(r.sub.p25));
+    addRow(null, "P50", Math.round(r.sub.p50));
+    addRow(null, "P75", Math.round(r.sub.p75));
+    addRow(null, "P95", Math.round(r.sub.p95));
   }
   if (r.base) {
     addRow("var(--series-2)", "Baseline P50", Math.round(r.base.p50));
   }
   if (r.actual !== null && r.actual !== undefined) {
     addRow("var(--text-secondary)", "Actual sales", r.actual + (r.actual === 0 ? " (zero ≠ proven no demand)" : ""));
+  }
+  const traffic = (state.trafficIndex.get(storeId) || new Map()).get(r.date);
+  if (traffic !== undefined) {
+    addRow(null, "Store transactions that day", traffic.toLocaleString());
   }
 
   tooltip.style.left = (left + 12) + "px";
@@ -1152,7 +1500,7 @@ function showShapTooltip(tooltip, row, left, top) {
 
 // ---------- Tab navigation ----------
 
-const TABS = ["overview", "exceptions", "forecasts"];
+const TABS = ["overview", "stores", "products", "exceptions", "forecasts"];
 
 function switchTab(tab) {
   TABS.forEach((t) => {
@@ -1168,6 +1516,10 @@ function initTabs() {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
   document.getElementById("goToExceptionsBtn").addEventListener("click", () => switchTab("exceptions"));
+  document.getElementById("storeSortBy").addEventListener("change", (e) => {
+    storeSortBy = e.target.value;
+    renderStoresTab();
+  });
   switchTab("overview");
 }
 
@@ -1226,6 +1578,6 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     splitCSVLine, eventAppliesToStore, niceMax, formatDate, addDays, isPayday,
     validateAndIndexSubmission, scanExceptions, FLAG_TYPES, ACTION_BY_FLAG,
-    parseShapCsv, SHAP_BUCKETS, state,
+    parseShapCsv, SHAP_BUCKETS, computeRollups, state,
   };
 }
