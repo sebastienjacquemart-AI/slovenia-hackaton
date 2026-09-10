@@ -69,6 +69,10 @@ OIL_SCHEMA = {"date": pl.String, "oil_price": pl.Float64}
 EVENT_LIST_COLUMNS = ["event_types", "event_scopes", "event_locations"]
 EVENT_BOOLEAN_COLUMNS = [
     "is_event_day",
+    "is_effective_event_day",
+    "is_effective_holiday",
+    "is_1d_before_holiday",
+    "is_2d_before_holiday",
     "has_holiday",
     "has_transfer",
     "has_additional",
@@ -76,6 +80,9 @@ EVENT_BOOLEAN_COLUMNS = [
     "has_national_event",
     "has_regional_event",
     "has_local_event",
+    "has_effective_national_event",
+    "has_effective_regional_event",
+    "has_effective_local_event",
     "has_transferred_event",
 ]
 
@@ -103,23 +110,33 @@ OUTPUT_COLUMNS = [
     "oil_price",
     "oil_price_source_missing",
     "event_count",
+    "effective_event_count",
     "is_event_day",
+    "is_effective_event_day",
     "event_types",
     "event_scopes",
     "event_locations",
     "has_holiday",
+    "is_effective_holiday",
+    "days_until_effective_holiday",
+    "is_1d_before_holiday",
+    "is_2d_before_holiday",
+    "days_since_effective_holiday",
     "has_transfer",
     "has_additional",
     "has_special_event",
     "has_national_event",
     "has_regional_event",
     "has_local_event",
+    "has_effective_national_event",
+    "has_effective_regional_event",
+    "has_effective_local_event",
     "has_transferred_event",
 ]
 
 
 def parse_args() -> argparse.Namespace:
-    challenge_dir = Path(__file__).resolve().parent
+    challenge_dir = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(
         description="Merge challenge CSV files into one typed Parquet dataset."
     )
@@ -411,14 +428,16 @@ def build_dataset(
         stores, on="store_id", how="left", validate="m:1"
     )
 
-    stores_eager = sources["stores"].collect()
-    events_eager = sources["events"].collect()
-    event_context, unmatched_events = build_event_context(events_eager, stores_eager)
-
     start_date = min(history_stats["min_date"], test_stats["min_date"])
     end_date = max(history_stats["max_date"], test_stats["max_date"])
     if not isinstance(start_date, date) or not isinstance(end_date, date):
         raise TypeError("Date bounds did not parse as dates")
+    stores_eager = sources["stores"].collect()
+    events_eager = sources["events"].collect()
+    event_context, unmatched_events = build_event_context(
+        events_eager, stores_eager, start_date, end_date
+    )
+
     oil_context = build_daily_oil_context(sources["oil"].collect(), start_date, end_date)
 
     frame = (
