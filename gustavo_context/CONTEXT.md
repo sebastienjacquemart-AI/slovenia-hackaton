@@ -43,6 +43,55 @@ prove either stockout or zero demand for a single product.
 - **Olivier Libert** — team, gave store-segmentation and promotion context.
 - **Sanne Van Ransbeeck** — team, gave holiday/transfer-date context.
 
+## Competition scoring (verified 2026-09-10)
+
+The participant CLI's local scorer confirms that the leaderboard uses
+row-weighted pinball loss after applying `log1p` to both actual and predicted
+sales. For row `i` and quantile probability `q`:
+
+```text
+z_i       = ln(1 + actual_i)
+z_hat_i,q = ln(1 + prediction_i,q)
+error_i,q = z_i - z_hat_i,q
+
+pinball_i,q = max(q * error_i,q, (q - 1) * error_i,q)
+
+score = sum_i(weight_i * sum_q(pinball_i,q))
+        / (4 * sum_i(weight_i))
+```
+
+The four submitted quantiles, P25, P50, P75, and P95, receive equal weight in
+the final mean. Their pinball penalties are directionally asymmetric:
+
+| Quantile | Underforecast coefficient | Overforecast coefficient |
+|---|---:|---:|
+| P25 | 0.25 | 0.75 |
+| P50 | 0.50 | 0.50 |
+| P75 | 0.75 | 0.25 |
+| P95 | 0.95 | 0.05 |
+
+P95 therefore penalizes underforecasting 19 times more than overforecasting.
+P25 penalizes overforecasting three times more than underforecasting. There is
+no evidence of an extra quantile-specific multiplier beyond these standard
+pinball coefficients.
+
+This was checked with a synthetic one-row ground-truth file. With actual sales
+of 10, unit row weight, and all four predictions set to zero, the CLI returned
+`1.468710854589002`, exactly equal to
+`ln(11) * (0.25 + 0.50 + 0.75 + 0.95) / 4`. A second exact-prediction row with
+weight 3 reduced the score to one quarter, confirming the row-weighted
+denominator.
+
+The public leaderboard scores only 20% of the evaluation data. The site does
+not disclose how it selects that subset. After the competition timer ends, the
+private leaderboard uses the full evaluation dataset. The scorer supports row
+weights, but there is no evidence that production uses unequal positive row
+weights beyond selecting the public subset.
+
+The validation functions in `pipeline/stages/model_training.py` and
+`pipeline/forecast.py` apply `log1p` before calculating pinball loss. Local validation
+uses equal row weights because the production row weights are not available.
+
 ## Domain notes from the team (Olivier & Sanne, 2026-09-10)
 
 **Holidays (`events_and_holidays.csv`) — critical for feature engineering:**

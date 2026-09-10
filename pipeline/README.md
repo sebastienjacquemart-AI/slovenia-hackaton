@@ -131,7 +131,33 @@ uv run python -m pipeline train \
 ```
 
 The report contains the split dates and row counts, pinball loss for each quantile, and
-mean pinball loss.
+mean pinball loss. The loss applies `log1p` to actual and predicted sales, matching the
+competition scorer's target scale.
+
+## Train and create a submission
+
+The recursive forecaster carries the strongest behavior from the earlier LightGBM
+experiment into this package. It trains four quantile models, feeds each predicted median
+into the next day's lag features, validates submission IDs and quantile order, and writes
+SHAP values beside the prediction file.
+
+Build Stage 1 first, then run:
+
+```bash
+uv run python -m pipeline data
+uv run python -m pipeline.forecast --feature-groups all
+```
+
+Predictions go to `pipeline/predictions/`. Models, holdout metrics, and diagnostics go to
+`pipeline/artifacts/`. Pass `--output predictions.csv` to choose an exact submission
+path. The command refuses to overwrite an existing prediction file.
+
+Each final run also writes `<prediction-name>.shap.parquet` beside the submission. The
+sidecar has one row per submission ID and quantile, with raw and submitted predictions,
+the source quantile model, the SHAP base value, and one `shap_<feature>` column per model
+feature. `postprocessing_adjustment` records negative-value clipping. When quantile
+crossing correction reorders predictions, `source_model_quantile` identifies which model
+produced each submitted quantile.
 
 ## Cache behavior
 

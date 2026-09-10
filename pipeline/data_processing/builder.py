@@ -9,6 +9,8 @@ from pathlib import Path
 
 import polars as pl
 
+from pipeline.stockouts import add_stockout_flag
+
 from .context import (
     add_event_defaults as _add_event_defaults,
     build_daily_oil_context as _build_daily_oil_context,
@@ -93,6 +95,7 @@ OUTPUT_COLUMNS = [
     "id",
     "dataset_split",
     "sales_count",
+    "is_likely_stockout",
     "promotion",
     "product_family",
     "product_class",
@@ -136,7 +139,7 @@ OUTPUT_COLUMNS = [
 
 
 def parse_args() -> argparse.Namespace:
-    challenge_dir = Path(__file__).resolve().parent.parent
+    challenge_dir = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
         description="Merge challenge CSV files into one typed Parquet dataset."
     )
@@ -144,7 +147,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=challenge_dir / "data" / "processed_dataset.parquet",
+        default=challenge_dir / ".cache" / "pipeline" / "stage1_merged.parquet",
     )
     parser.add_argument(
         "--compression",
@@ -417,7 +420,7 @@ def build_dataset(
         pl.lit(None, dtype=pl.Float64).alias("sales_count"),
         pl.lit("test").alias("dataset_split"),
     ).select(history.collect_schema().names())
-    base = pl.concat([history, test], how="vertical")
+    base = add_stockout_flag(pl.concat([history, test], how="vertical"))
 
     items = sources["items"].with_columns(
         (pl.col("is_perishable") == 1).alias("is_perishable"),
@@ -485,6 +488,12 @@ def build_dataset(
         ((pl.col("dataset_split") == "test") & pl.col("sales_count").is_not_null())
         .sum()
         .alias("present_test_targets"),
+        ((pl.col("dataset_split") == "train") & pl.col("is_likely_stockout").is_null())
+        .sum()
+        .alias("missing_train_stockout_flags"),
+        ((pl.col("dataset_split") == "test") & pl.col("is_likely_stockout").is_not_null())
+        .sum()
+        .alias("present_test_stockout_flags"),
         (pl.col("dataset_split") == "train").sum().alias("train_rows"),
         (pl.col("dataset_split") == "test").sum().alias("test_rows"),
     ).collect()
@@ -498,6 +507,8 @@ def build_dataset(
         "missing_store_context": 0,
         "missing_train_targets": 0,
         "present_test_targets": 0,
+        "missing_train_stockout_flags": 0,
+        "present_test_stockout_flags": 0,
         "train_rows": EXPECTED_TRAIN_ROWS,
         "test_rows": EXPECTED_TEST_ROWS,
     }

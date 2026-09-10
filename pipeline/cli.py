@@ -17,7 +17,7 @@ from .stages.model_training import train_and_evaluate
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 CHALLENGE_DIR = PACKAGE_DIR.parent
-DATA_PROCESSING_DIR = CHALLENGE_DIR / "data_processing"
+DATA_PROCESSING_DIR = PACKAGE_DIR / "data_processing"
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,11 +64,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
         inputs=source_paths(args.data_dir),
         code_files=[
             cache_code,
-            DATA_PROCESSING_DIR / "cli.py",
+            DATA_PROCESSING_DIR / "builder.py",
             DATA_PROCESSING_DIR / "config.py",
             DATA_PROCESSING_DIR / "context.py",
             DATA_PROCESSING_DIR / "sources.py",
             DATA_PROCESSING_DIR / "validation.py",
+            PACKAGE_DIR / "stockouts.py",
             PACKAGE_DIR / "stages" / "data_processing.py",
         ],
         parameters={"compression": "zstd"},
@@ -86,6 +87,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             code_files=[
                 cache_code,
                 PACKAGE_DIR / "features.py",
+                PACKAGE_DIR / "stockouts.py",
                 PACKAGE_DIR / "stages" / "feature_engineering.py",
             ],
             parameters={"compression": "zstd", "feature_groups": groups},

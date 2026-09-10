@@ -1,6 +1,6 @@
-"""Components and command-line entry point for the forecasting dataset."""
+"""Stage 1 data-processing components."""
 
-from .cli import (
+from .builder import (
     add_event_defaults,
     build_daily_oil_context,
     build_dataset,

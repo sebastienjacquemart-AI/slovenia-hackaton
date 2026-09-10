@@ -13,7 +13,7 @@ from pipeline.models import QUANTILES, get_model
 
 
 def _pinball(actual: pl.Series, predicted: pl.Series, quantile: float) -> float:
-    error = actual - predicted
+    error = actual.log1p() - predicted.clip(lower_bound=0).log1p()
     loss = error.clip(lower_bound=0) * quantile + (-error).clip(
         lower_bound=0
     ) * (1 - quantile)

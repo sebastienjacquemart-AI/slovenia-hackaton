@@ -79,6 +79,9 @@ def _external() -> list[pl.Expr]:
         "has_national_event",
         "has_regional_event",
         "has_local_event",
+        "has_effective_national_event",
+        "has_effective_regional_event",
+        "has_effective_local_event",
         "has_transferred_event",
     )
     return [
@@ -113,6 +116,14 @@ def _sales_history() -> list[pl.Expr]:
                 .alias(f"feature_sales_std_{window}"),
             ]
         )
+    expressions.append(
+        pl.col("is_likely_stockout")
+        .shift(1)
+        .over(SERIES_KEYS)
+        .fill_null(False)
+        .cast(pl.Int8)
+        .alias("feature_likely_stockout_lag_1")
+    )
     return expressions
 
 

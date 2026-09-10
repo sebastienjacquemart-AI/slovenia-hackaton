@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from data_processing.cli import build_dataset, write_parquet
-from data_processing.config import EXPECTED_TEST_ROWS, EXPECTED_TRAIN_ROWS
-from data_processing.sources import scan_sources
-from data_processing.validation import (
+from pipeline.data_processing.builder import build_dataset, write_parquet
+from pipeline.data_processing.config import EXPECTED_TEST_ROWS, EXPECTED_TRAIN_ROWS
+from pipeline.data_processing.sources import scan_sources
+from pipeline.data_processing.validation import (
     validate_context_sources,
     validate_dimension,
     validate_panel,
