@@ -157,6 +157,16 @@ Use the historical quantile model for a quick baseline:
 uv run python -m pipeline all --model historical_quantile
 ```
 
+Try AutoGluon on the same Stage 2 features and chronological holdout:
+
+```bash
+uv run python -m pipeline train --model autogluon \
+  --autogluon-time-limit 300
+```
+
+AutoGluon requires Python 3.13 or older. `uv sync` selects a compatible interpreter
+from the project's declared Python range.
+
 Choose feature groups with a comma-separated list. The available groups are
 `identity`, `promotion`, `calendar`, `product`, `store`, `external`, and
 `sales_history`:

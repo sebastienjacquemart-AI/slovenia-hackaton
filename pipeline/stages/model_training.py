@@ -9,7 +9,13 @@ from typing import Any
 
 import polars as pl
 
-from pipeline.models import QUANTILES, LightGBMConfig, get_model
+from pipeline.models import (
+    QUANTILES,
+    AutoGluonConfig,
+    LightGBMConfig,
+    ModelConfig,
+    get_model,
+)
 
 
 def _pinball(actual: pl.Series, predicted: pl.Series, quantile: float) -> float:
@@ -26,7 +32,8 @@ def train_and_evaluate(
     model_name: str,
     holdout_days: int,
     seed: int,
-    model_config: LightGBMConfig | None = None,
+    model_config: ModelConfig | None = None,
+    log_sales: bool = False,
 ) -> dict[str, Any]:
     if holdout_days < 1:
         raise ValueError("holdout_days must be at least 1")
@@ -46,9 +53,14 @@ def train_and_evaluate(
     ]
     predictor = get_model(model_name)
     if model_config is None:
-        model_config = LightGBMConfig()
+        model_config = (
+            AutoGluonConfig() if model_name == "autogluon" else LightGBMConfig()
+        )
+    model_training = training
+    if log_sales:
+        model_training = training.with_columns(pl.col("sales_count").log1p())
     prediction_rows, model_metadata = predictor(
-        training, validation, feature_columns, seed, model_config
+        model_training, validation, feature_columns, seed, model_config
     )
     prediction_columns = [
         f"prediction_p{int(quantile * 100):02d}" for quantile in QUANTILES
@@ -58,6 +70,10 @@ def train_and_evaluate(
         schema=prediction_columns,
         orient="row",
     )
+    if log_sales:
+        predictions = predictions.select(pl.all().exp() - 1).select(
+            pl.all().clip(lower_bound=0)
+        )
     losses = {
         f"pinball_p{int(quantile * 100):02d}": _pinball(
             validation.get_column("sales_count"),
@@ -68,6 +84,7 @@ def train_and_evaluate(
     }
     report: dict[str, Any] = {
         "model": model_name,
+        "target_transform": "log1p" if log_sales else "identity",
         "feature_count": len(feature_columns),
         "training_rows": training.height,
         "validation_rows": validation.height,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -13,8 +15,8 @@ QUANTILES = (0.25, 0.50, 0.75, 0.95)
 
 @dataclass(frozen=True)
 class LightGBMConfig:
-    num_boost_round: int = 250
-    learning_rate: float = 0.05
+    num_boost_round: int = 500
+    learning_rate: float = 0.03
     num_leaves: int = 31
     min_data_in_leaf: int = 20
     feature_fraction: float = 1.0
@@ -25,8 +27,22 @@ class LightGBMConfig:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class AutoGluonConfig:
+    time_limit: int | None = 300
+    presets: str = "medium_quality"
+    model_types: tuple[str, ...] = ()
+    num_cpus: int | str = "auto"
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+ModelConfig = LightGBMConfig | AutoGluonConfig
+
+
 PredictionFunction = Callable[
-    [pl.DataFrame, pl.DataFrame, list[str], int, LightGBMConfig],
+    [pl.DataFrame, pl.DataFrame, list[str], int, ModelConfig],
     tuple[list[list[float]], dict[str, Any]],
 ]
 
@@ -36,7 +52,7 @@ def historical_quantile_predictions(
     validation: pl.DataFrame,
     feature_columns: list[str],
     seed: int,
-    config: LightGBMConfig,
+    config: ModelConfig,
 ) -> tuple[list[list[float]], dict[str, Any]]:
     del feature_columns, seed, config
     prediction_names = [
@@ -67,8 +83,10 @@ def lightgbm_predictions(
     validation: pl.DataFrame,
     feature_columns: list[str],
     seed: int,
-    config: LightGBMConfig,
+    config: ModelConfig,
 ) -> tuple[list[list[float]], dict[str, Any]]:
+    if not isinstance(config, LightGBMConfig):
+        raise TypeError("lightgbm requires LightGBMConfig")
     try:
         import numpy as np
         from lightgbm import Dataset, train
@@ -107,7 +125,70 @@ def lightgbm_predictions(
     }
 
 
+def autogluon_predictions(
+    training: pl.DataFrame,
+    validation: pl.DataFrame,
+    feature_columns: list[str],
+    seed: int,
+    config: ModelConfig,
+) -> tuple[list[list[float]], dict[str, Any]]:
+    if not isinstance(config, AutoGluonConfig):
+        raise TypeError("autogluon requires AutoGluonConfig")
+    try:
+        import numpy as np
+        from autogluon.tabular import TabularPredictor
+    except ImportError as error:
+        raise RuntimeError(
+            "The autogluon model needs the root project dependencies. "
+            "Run `uv sync` from the challenge directory."
+        ) from error
+
+    random.seed(seed)
+    np.random.seed(seed)
+    label = "sales_count"
+    train_data = training.select(*feature_columns, label).to_pandas()
+    validation_data = validation.select(feature_columns).to_pandas()
+    fit_options: dict[str, Any] = {
+        "num_cpus": config.num_cpus,
+        "num_gpus": 0,
+        "presets": config.presets,
+        "time_limit": config.time_limit,
+    }
+    if config.model_types:
+        fit_options["hyperparameters"] = {
+            model_type: {} for model_type in config.model_types
+        }
+
+    with tempfile.TemporaryDirectory(prefix="autogluon-quantile-") as model_path:
+        predictor = TabularPredictor(
+            label=label,
+            problem_type="quantile",
+            quantile_levels=list(QUANTILES),
+            eval_metric="pinball_loss",
+            path=model_path,
+            verbosity=0,
+        ).fit(train_data=train_data, **fit_options)
+        predicted = predictor.predict(validation_data)
+        prediction_columns = [
+            next(column for column in predicted.columns if float(column) == quantile)
+            for quantile in QUANTILES
+        ]
+        predictions = np.maximum.accumulate(
+            np.maximum(predicted[prediction_columns].to_numpy(), 0.0), axis=1
+        )
+        model_names = predictor.model_names()
+        best_model = predictor.model_best
+
+    return predictions.tolist(), {
+        **config.as_dict(),
+        "feature_count": len(feature_columns),
+        "fit_models": len(model_names),
+        "best_model": best_model,
+    }
+
+
 MODELS: dict[str, PredictionFunction] = {
+    "autogluon": autogluon_predictions,
     "historical_quantile": historical_quantile_predictions,
     "lightgbm": lightgbm_predictions,
 }

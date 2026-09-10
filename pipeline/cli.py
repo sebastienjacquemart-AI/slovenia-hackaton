@@ -9,7 +9,7 @@ from typing import Any
 
 from .cache import run_cached_stage
 from .features import FEATURE_GROUPS, parse_feature_groups
-from .models import MODELS, LightGBMConfig
+from .models import MODELS, AutoGluonConfig, LightGBMConfig
 from .stages.data_processing import build_merged_data, source_paths
 from .stages.feature_engineering import build_training_features
 from .stages.model_training import train_and_evaluate
@@ -35,19 +35,33 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--features",
-        default="all",
-        help=f"Comma-separated groups or all. Available: {', '.join(FEATURE_GROUPS)}",
+        default="best",
+        help=(
+            "Comma-separated groups, best, or all. "
+            f"Available: {', '.join(FEATURE_GROUPS)}"
+        ),
     )
     parser.add_argument("--model", choices=tuple(MODELS), default="lightgbm")
     parser.add_argument("--holdout-days", type=int, default=28)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-boost-round", type=int, default=250)
-    parser.add_argument("--learning-rate", type=float, default=0.05)
+    parser.add_argument(
+        "--log-sales",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Train on log1p(sales_count) and convert predictions back to sales units "
+            "(default: enabled)."
+        ),
+    )
+    parser.add_argument("--num-boost-round", type=int, default=500)
+    parser.add_argument("--learning-rate", type=float, default=0.03)
     parser.add_argument("--num-leaves", type=int, default=31)
     parser.add_argument("--min-data-in-leaf", type=int, default=20)
     parser.add_argument("--feature-fraction", type=float, default=1.0)
     parser.add_argument("--bagging-fraction", type=float, default=1.0)
     parser.add_argument("--bagging-freq", type=int, default=0)
+    parser.add_argument("--autogluon-time-limit", type=int, default=300)
+    parser.add_argument("--autogluon-presets", default="medium_quality")
     parser.add_argument(
         "--force", action="store_true", help="Ignore matching stage caches"
     )
@@ -107,15 +121,21 @@ def run_pipeline(args: argparse.Namespace) -> None:
         )
         _display("Stage 2 feature engineering", hit, metadata)
     if args.stage in ("all", "train"):
-        model_config = LightGBMConfig(
-            num_boost_round=args.num_boost_round,
-            learning_rate=args.learning_rate,
-            num_leaves=args.num_leaves,
-            min_data_in_leaf=args.min_data_in_leaf,
-            feature_fraction=args.feature_fraction,
-            bagging_fraction=args.bagging_fraction,
-            bagging_freq=args.bagging_freq,
-        )
+        if args.model == "autogluon":
+            model_config = AutoGluonConfig(
+                time_limit=args.autogluon_time_limit,
+                presets=args.autogluon_presets,
+            )
+        else:
+            model_config = LightGBMConfig(
+                num_boost_round=args.num_boost_round,
+                learning_rate=args.learning_rate,
+                num_leaves=args.num_leaves,
+                min_data_in_leaf=args.min_data_in_leaf,
+                feature_fraction=args.feature_fraction,
+                bagging_fraction=args.bagging_fraction,
+                bagging_freq=args.bagging_freq,
+            )
         hit, metadata = run_cached_stage(
             stage="stage3_model_training",
             output_path=report_path,
@@ -131,6 +151,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 "holdout_days": args.holdout_days,
                 "model": args.model,
                 "seed": args.seed,
+                "log_sales": args.log_sales,
                 **model_config.as_dict(),
             },
             build=lambda output: train_and_evaluate(
@@ -140,6 +161,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 args.holdout_days,
                 args.seed,
                 model_config,
+                args.log_sales,
             ),
             force=args.force,
         )

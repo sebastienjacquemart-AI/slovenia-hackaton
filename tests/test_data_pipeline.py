@@ -7,6 +7,7 @@ import polars as pl
 
 from pipeline.data_processing import (
     build_daily_oil_context,
+    build_daily_traffic_context,
     build_event_context,
     validate_context_sources,
 )
@@ -121,6 +122,50 @@ class OilContextTests(unittest.TestCase):
             result.get_column("oil_price_source_missing").to_list(),
             [True, False, True, False, True],
         )
+
+
+class TrafficContextTests(unittest.TestCase):
+    def test_traffic_features_are_causal_and_carry_forward_as_of_baseline(self) -> None:
+        stores = pl.DataFrame({"store_id": [1]}, schema={"store_id": pl.Int16})
+        traffic = pl.DataFrame(
+            {
+                "date": [date(2026, 1, 1), date(2026, 1, 2)],
+                "store_id": [1, 1],
+                "transaction_count": [100, 120],
+            },
+            schema={
+                "date": pl.Date,
+                "store_id": pl.Int16,
+                "transaction_count": pl.Int32,
+            },
+        )
+
+        result = build_daily_traffic_context(
+            traffic, stores, date(2026, 1, 1), date(2026, 1, 4)
+        )
+
+        self.assertEqual(result["traffic_lag_1"].to_list(), [None, 100.0, 120.0, 120.0])
+        self.assertEqual(
+            result["traffic_source_missing"].to_list(), [False, False, True, True]
+        )
+        self.assertEqual(
+            result["traffic_mean_7"].to_list(),
+            [None, 100.0, 110.0, 113.33333333333333],
+        )
+
+    def test_invalid_traffic_is_rejected(self) -> None:
+        stores = pl.DataFrame({"store_id": [1]}, schema={"store_id": pl.Int16})
+        traffic = pl.DataFrame(
+            {
+                "date": [date(2026, 1, 1), date(2026, 1, 1)],
+                "store_id": [1, 1],
+                "transaction_count": [100, 90],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            build_daily_traffic_context(
+                traffic, stores, date(2026, 1, 1), date(2026, 1, 1)
+            )
 
 
 class SourceValidationTests(unittest.TestCase):

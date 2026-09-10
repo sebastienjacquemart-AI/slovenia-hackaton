@@ -2,8 +2,9 @@
 name = "forecasting-data-pipeline"
 version = "0.1.0"
 description = "Polars pipeline for the forecasting challenge dataset"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
+    "autogluon-tabular[lightgbm]>=1.5,<2",
     "lightgbm>=4.6,<5",
     "numpy>=2.0,<3",
     "pandas>=2.2,<4",

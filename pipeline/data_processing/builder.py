@@ -16,7 +16,12 @@ from .config import (
     KEY_COLUMNS,
     OUTPUT_COLUMNS,
 )
-from .context import add_event_defaults, build_daily_oil_context, build_event_context
+from .context import (
+    add_event_defaults,
+    build_daily_oil_context,
+    build_daily_traffic_context,
+    build_event_context,
+)
 from .validation import scalar
 
 
@@ -44,15 +49,14 @@ def build_dataset(
     frame = base.join(items, on="product_id", how="left", validate="m:1").join(
         stores, on="store_id", how="left", validate="m:1"
     )
-    frame = frame.join(
-        sources["traffic"], on=["date", "store_id"], how="left", validate="m:1"
-    )
-
     start_date = min(history_stats["min_date"], test_stats["min_date"])
     end_date = max(history_stats["max_date"], test_stats["max_date"])
     if not isinstance(start_date, date) or not isinstance(end_date, date):
         raise TypeError("Date bounds did not parse as dates")
     stores_eager = sources["stores"].collect()
+    traffic_context = build_daily_traffic_context(
+        sources["traffic"].collect(), stores_eager, start_date, end_date
+    )
     event_context, unmatched_events = build_event_context(
         sources["events"].collect(), stores_eager, start_date, end_date
     )
@@ -60,7 +64,10 @@ def build_dataset(
         sources["oil"].collect(), start_date, end_date
     )
     frame = (
-        frame.join(oil_context.lazy(), on="date", how="left", validate="m:1")
+        frame.join(
+            traffic_context.lazy(), on=["date", "store_id"], how="left", validate="m:1"
+        )
+        .join(oil_context.lazy(), on="date", how="left", validate="m:1")
         .join(event_context.lazy(), on=["date", "store_id"], how="left", validate="m:1")
         .with_columns(
             pl.col("date").dt.year().cast(pl.Int16).alias("year"),

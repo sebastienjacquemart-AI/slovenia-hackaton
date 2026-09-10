@@ -17,7 +17,14 @@ BASE_FEATURE_GROUPS = (
     "sales_history",
 )
 # Updated after chronological ablation runs. Keep raw identifiers out of this preset.
-BEST_FEATURE_GROUPS = BASE_FEATURE_GROUPS
+BEST_FEATURE_GROUPS = BASE_FEATURE_GROUPS + (
+    "promotion_regime",
+    "seasonal_history",
+    "intermittency",
+    "behavioral_profile",
+    "oil_trend",
+    "hierarchy",
+)
 
 
 def _encoded(column: str) -> pl.Expr:
@@ -69,7 +76,10 @@ def _store() -> list[pl.Expr]:
 def _external() -> list[pl.Expr]:
     numeric = (
         "oil_price",
-        "transaction_count",
+        "traffic_lag_1",
+        "traffic_mean_7",
+        "traffic_mean_28",
+        "traffic_ratio_7_28",
         "event_count",
         "effective_event_count",
         "days_until_effective_holiday",
@@ -77,6 +87,7 @@ def _external() -> list[pl.Expr]:
     )
     boolean = (
         "oil_price_source_missing",
+        "traffic_source_missing",
         "is_event_day",
         "is_effective_event_day",
         "has_holiday",
@@ -364,6 +375,11 @@ def _oil_trend() -> list[pl.Expr]:
     ]
 
 
+def _hierarchy() -> list[pl.Expr]:
+    """Stage 2 builds these features from daily aggregate tables."""
+    return []
+
+
 FEATURE_GROUPS: dict[str, FeatureBuilder] = {
     "identity": _identity,
     "promotion": _promotion,
@@ -379,6 +395,7 @@ FEATURE_GROUPS: dict[str, FeatureBuilder] = {
     "holiday_regime": _holiday_regime,
     "behavioral_profile": _behavioral_profile,
     "oil_trend": _oil_trend,
+    "hierarchy": _hierarchy,
 }
 
 
