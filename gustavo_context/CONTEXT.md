@@ -116,6 +116,107 @@ more isn't uniform across products/stores:
   store×product is probably wrong. Fresh + promoted + staple should skew
   wider/higher; discretionary + low-volume-store should skew tighter/lower.
 
+## Q&A with Gustavo (2026-09-10)
+
+**Stock-availability priorities:**
+- Most critical to keep in stock despite uncertainty: perishables, staples/
+  high-volume products (esp. ahead of a holiday, **payday — the 3rd and
+  18th of the month**, or a local event), promoted lines, products in
+  large-format stores, essentials in high-traffic urban stores (Medellín,
+  Barranquilla).
+- Risk compounds: a promoted fresh staple in a large-format store before a
+  holiday is the "protect hardest" case — not where a cautious median
+  forecast belongs.
+- Won't name specific critical product IDs from the catalogue alone — that
+  needs actual sales behaviour, not just metadata.
+
+**Promotion incrementality vs. cannibalization:**
+- Not all promotions create *new* demand — varies by product/store.
+- More likely **incremental** (genuinely additional demand): staples/
+  essentials, strong visibility + real price/placement change, timed
+  before a holiday/payday/local event, enough store traffic and normal
+  stock levels.
+- More likely **pull-forward / cannibalized** (shifts sales from nearby
+  days, spike now + dip after): discretionary items, planned household
+  purchases, goods bought in bulk because temporarily cheap.
+- The `promotion` flag only tells you we pushed the item — not whether it
+  created net-new demand. That has to be inferred from sales history
+  (e.g. compare sales in the days immediately after a promo ends).
+
+**Lead time before holiday/payday:** no fixed number of days — varies by
+occasion, product, store. Fresh/staples/beverages/entertaining goods react
+earlier than routine household lines; payday effects split between the
+exact date and the surrounding days depending on product/location. Avoid
+hardcoding a single lead-time window as a feature.
+
+**Regional/local sensitivity by product family:** fresh/perishables,
+beverages/entertaining (incl. wine), staples/essentials (regional income &
+payday timing shift basket size/brand choice), and "local habit" products
+(routine in one city, occasional elsewhere) are most sensitive. Expects
+stronger differences across **store cluster/format** than from product
+family alone.
+
+**Zero sales ≠ zero demand:** a `0` in `sales_count` only means no units
+were recorded sold — not that the shelf was stocked and no one wanted it.
+Common causes besides genuine low demand: out of stock, poor placement/
+visibility, no promotion when one was expected, product not relevant to
+that store's customer base, unusual calendar day. **The data doesn't
+distinguish these** — treating every zero as true zero demand is a
+confident way to be wrong.
+
+**Not derivable from these extracts** (asked directly, Gustavo declined to
+guess): perishable-category shelf-life/waste tolerance, routine
+product-pairing/basket co-purchase effects, which named store clusters
+behave differently under promo/holiday/payday. All would require checking
+raw sales history, not something to reverse-engineer from the catalogue.
+
+**Strategic importance beyond average volume** — a modest-volume
+store×product pair still matters when it's perishable, an essential line,
+under active promotion, holiday/event-relevant, important to one
+particular store's local customer base (even if not estate-wide), or
+high-variance/surprising (e.g. wine, premium lines).
+
+**Where to be conservative (favor high quantiles) vs. accept risk (favor
+low quantiles)** — reinforces the earlier asymmetry notes, with specifics:
+- Conservative: perishables, promoted lines (esp. cooking oil, household
+  staples), holiday/event periods, essential everyday products, store-
+  product pairs important to a specific local base.
+- More risk-tolerant: non-perishable, demand driven by a one-off planned
+  promotion, discretionary/unpredictable premium lines (wine) where
+  overcommitting inventory just leaves stock sitting.
+
+**Morning review-exception checklist** (what a store manager checks first
+— maps directly to dashboard "flag" ideas, see Notes for Jan):
+1. Perishables with high P95 but much lower P50 (stockout risk on fresh).
+2. Promoted lines with elevated P75/P95, esp. cooking oil, staples, wine
+   (empty shelf under a promo sign).
+3. Dates around a holiday/Transfer/additional day/major event — including
+   the day before, not just the day itself.
+4. Essential everyday products with a low P25 or P50 (a modest staple
+   missing still damages the whole trip).
+5. Store-product forecasts that look unusually different from that
+   store's normal behaviour.
+6. High-uncertainty lines where P95 is dramatically above P50 (esp. wine,
+   premium, promoted perishables) — needs human judgement, not blind trust.
+7. Non-perishable discretionary lines with high P95 but weak middle
+   figures — acceptable stockout risk, don't over-stock for them.
+
+**What would make Gustavo distrust a forecast even if the estate total
+looks fine:**
+- Store-level picture wrong even though the total nets out okay.
+- Perishables with low P25/P50 but high P95 around promos/events.
+- Promoted staples (esp. cooking oil) forecast like an ordinary day.
+- Wine/premium lines shown with implausibly tight/precise quantiles.
+- Holiday/Transfer/pre-holiday days treated like a normal weekday.
+- Essential products with implausibly low P25/P50.
+- Forecasts that ignore the store's own character (city/format/cluster).
+- Too many identical-looking forecasts across products/stores ("my shops
+  are not photocopies").
+- Systematic zero-handling bias (treating every zero as lost demand, or
+  every zero as no interest).
+- **Hard rule**: quantiles must be monotonic — `P25 ≤ P50 ≤ P75 ≤ P95` for
+  every row. A violation means the forecast contradicts itself.
+
 ## External links
 
 - Sanne shared a Google Drive folder (2026-09-10):
@@ -145,3 +246,30 @@ more isn't uniform across products/stores:
 - Quantile asymmetry: the "right" spread between P25/P75/P95 probably
   differs by product/store risk tier (see under/over-forecast notes
   above) rather than being a fixed offset from P50.
+- Payday dates (3rd and 18th of each month) are a concrete, checkable
+  calendar feature — distinct from the holiday calendar file.
+- Promotion feature should ideally distinguish likely-incremental vs.
+  likely-cannibalized promos (see Q&A above), not treat `promotion=True`
+  as one uniform effect.
+- Zeros in `sales_count` are censored/ambiguous (could be stockout, not
+  true zero demand) — worth flagging as a modeling caveat, not something
+  this data can resolve on its own.
+- Quantile outputs must satisfy `P25 ≤ P50 ≤ P75 ≤ P95` per row — Gustavo
+  called this out as a hard sanity check, and it's a natural validation
+  rule for the dashboard too (see below).
+
+## Dashboard notes (validation ideas from Gustavo's review checklist)
+
+Gustavo's "morning review exceptions" and "what would make me distrust a
+forecast" answers (Q&A above) double as a spec for what the submission
+dashboard should flag, beyond basic schema validation:
+- Quantile monotonicity violation (`P25 ≤ P50 ≤ P75 ≤ P95`) — hard error.
+- Perishable rows with a large P95−P50 gap.
+- Promoted rows (join `test.csv.promotion`) with high P75/P95, esp. for
+  staple-ish/staple product families.
+- Rows on/around a holiday `Transfer` date or the day before.
+- Essential/staple rows with low P25/P50.
+- Rows with an unusually wide P95−P25 spread relative to similar products
+  (possible "false confidence" or "no confidence" outlier).
+- Compare against `predictions_baseline.csv` per row to surface large
+  deviations for a human to sanity-check, not to auto-correct.
