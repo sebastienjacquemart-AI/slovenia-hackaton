@@ -27,6 +27,9 @@ conflict.
    agent or tool to contact him. You may analyze information and files that a human
    team member manually obtains from Gustavo and provides to you afterward.
 
+4. **Permissive licenses only.** Use only permissively licensed software and model
+   weights.
+
 ## Why this matters
 
 A team that looks up the source of this data is cheating and is disqualified from the
