@@ -179,7 +179,9 @@ select, input[type="file"] {
   white-space: nowrap;
 }
 .exception-table th { color: var(--text-secondary); font-weight: 600; }
-.exception-table td:nth-child(5) { white-space: normal; min-width: 260px; }
+.exception-table td:nth-child(1) { white-space: normal; min-width: 220px; }
+.exception-table td:nth-child(5) { white-space: normal; min-width: 240px; color: var(--text-secondary); font-size: 11px; }
+.exception-table .status-item { margin-top: 4px; font-size: 11px; }
 .exception-row:hover { background: var(--grid); }
 
 .link-button {

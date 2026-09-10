@@ -14,28 +14,29 @@ const STAPLE_FAMILIES = new Set([
 ]);
 
 const FLAG_TYPES = {
-  monotonicity: { label: "Quantile order violated (P25≤P50≤P75≤P95)", severity: "critical" },
-  perishable_spike: { label: "Perishable: P95 ≫ P50 (stockout risk)", severity: "warning" },
-  promo_no_lift: { label: "Promoted day, no forecast lift", severity: "warning" },
-  holiday_flat: { label: "Holiday/pre-holiday treated as normal", severity: "warning" },
-  essential_low: { label: "Essential item, P50 = 0", severity: "warning" },
-  zero_forecast: { label: "Median forecast is 0", severity: "info" },
-  wide_spread: { label: "Unusually wide P25–P95 spread", severity: "info" },
-  baseline_deviation: { label: "Large deviation from baseline", severity: "info" },
+  monotonicity: { label: "Numbers don't add up", severity: "critical" },
+  perishable_spike: { label: "Perishable item, big swing possible", severity: "warning" },
+  promo_no_lift: { label: "Promotion with no expected boost", severity: "warning" },
+  holiday_flat: { label: "Holiday treated like a normal day", severity: "warning" },
+  essential_low: { label: "Everyday item forecast at zero", severity: "warning" },
+  zero_forecast: { label: "Forecast is zero", severity: "info" },
+  wide_spread: { label: "Very uncertain forecast", severity: "info" },
+  baseline_deviation: { label: "Big change from the usual model", severity: "info" },
 };
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
+const SEVERITY_LABEL = { critical: "Fix now", warning: "Worth a look", info: "For your info" };
 
 // What a reviewer should actually do about each flag — Gustavo's "practical
 // action view" ask, folded into the exceptions table rather than a second page.
 const ACTION_BY_FLAG = {
-  monotonicity: "Data integrity — fix/reject before use",
-  perishable_spike: "Replenishment — perishable, verify upper-bound stock",
-  promo_no_lift: "Promotion readiness — review the planned promo",
-  holiday_flat: "Calendar readiness — check holiday/payday staffing & stock",
-  essential_low: "Replenishment — essential item, confirm before it hits zero",
-  zero_forecast: "Manager review — confirm zero is expected, not a data gap",
-  wide_spread: "Manager review — high uncertainty, use judgement not the raw number",
-  baseline_deviation: "Manager review — sanity-check the change vs. baseline",
+  monotonicity: "Data problem — fix or reject before using this row",
+  perishable_spike: "Perishable item — double-check you won't overstock",
+  promo_no_lift: "Check this promotion — no sales boost is expected",
+  holiday_flat: "Check holiday staffing & stock — forecast doesn't reflect the holiday",
+  essential_low: "Everyday item — confirm zero is right before it runs out",
+  zero_forecast: "Double-check: is zero really expected here?",
+  wide_spread: "Uncertain forecast — use your judgement, not just the number",
+  baseline_deviation: "Double-check this — it's very different from the usual model",
 };
 
 const HISTORY_LOOKBACK_DAYS = 30;
@@ -308,43 +309,43 @@ function scanExceptions() {
     }
 
     if (!(sub.p25 <= sub.p50 && sub.p50 <= sub.p75 && sub.p75 <= sub.p95)) {
-      addFlag("monotonicity", `P25 ${sub.p25} / P50 ${sub.p50} / P75 ${sub.p75} / P95 ${sub.p95} out of order`);
+      addFlag("monotonicity", `Low estimate ${sub.p25}, typical ${sub.p50}, high estimate ${sub.p75}, worst case ${sub.p95} — should rise in that order, but doesn't`);
     }
 
     if (product.is_perishable === "1") {
       const spiked = sub.p50 === 0 ? sub.p95 >= 3 : sub.p95 / sub.p50 >= 2;
-      if (spiked) addFlag("perishable_spike", `P50 ${sub.p50} but P95 ${sub.p95}`);
+      if (spiked) addFlag("perishable_spike", `Typical estimate is ${sub.p50}, but the worst case is ${sub.p95} — much higher`);
     }
 
     const stats = seriesStats.get(t.store_id + "|" + t.product_id);
     if (t.promotion === "True" && stats && stats.nonPromoAvg !== null && stats.nonPromoAvg > 0.5 &&
         sub.p50 <= stats.nonPromoAvg * 1.05) {
-      addFlag("promo_no_lift", `P50 ${sub.p50} vs. this series' typical non-promo P50 ${stats.nonPromoAvg.toFixed(1)}`);
+      addFlag("promo_no_lift", `Forecast is ${sub.p50}, about the same as a normal day (~${stats.nonPromoAvg.toFixed(1)}) despite the promotion`);
     }
 
     const holidaySet = holidaySetsByStore.get(t.store_id);
     if (holidaySet.has(t.date) && stats && stats.nonHolidayAvg !== null && stats.nonHolidayAvg > 0.5) {
       const diffRatio = Math.abs(sub.p50 - stats.nonHolidayAvg) / stats.nonHolidayAvg;
-      if (diffRatio < 0.1) addFlag("holiday_flat", `P50 ${sub.p50} ≈ this series' normal-day average ${stats.nonHolidayAvg.toFixed(1)}`);
+      if (diffRatio < 0.1) addFlag("holiday_flat", `Forecast is ${sub.p50}, about the same as a normal day (~${stats.nonHolidayAvg.toFixed(1)}) even though this is a holiday`);
     }
 
     if (sub.p50 === 0 && sub.p95 > 0) {
       if (STAPLE_FAMILIES.has(product.product_family)) {
-        addFlag("essential_low", `Median forecast is 0 (P95 ${sub.p95}), family ${product.product_family}`);
+        addFlag("essential_low", `Typical forecast is 0 units (worst case up to ${sub.p95}) for an everyday ${product.product_family.toLowerCase()} item`);
       } else {
-        addFlag("zero_forecast", `Median forecast is 0 (P95 ${sub.p95}), family ${product.product_family}`);
+        addFlag("zero_forecast", `Typical forecast is 0 units (worst case up to ${sub.p95})`);
       }
     }
 
     if (sub.p95 - sub.p25 >= 2.5 * Math.max(sub.p50, 1)) {
-      addFlag("wide_spread", `P25 ${sub.p25} to P95 ${sub.p95} — wide relative to P50 ${sub.p50}`);
+      addFlag("wide_spread", `Could be anywhere from ${sub.p25} to ${sub.p95} around a typical estimate of ${sub.p50} — a wide range`);
     }
 
     const base = state.baselineById.get(id);
     if (base) {
       const rel = Math.abs(sub.p50 - base.p50) / Math.max(base.p50, 1);
       if (rel >= 1.0 && Math.abs(sub.p50 - base.p50) >= 3) {
-        addFlag("baseline_deviation", `Submission P50 ${sub.p50} vs. baseline P50 ${base.p50} (${Math.round(rel * 100)}% relative difference)`);
+        addFlag("baseline_deviation", `Forecast is ${sub.p50}, vs. ${base.p50} from the simple baseline model — a ${Math.round(rel * 100)}% difference`);
       }
     }
   }
@@ -519,9 +520,10 @@ function renderExceptions() {
     bySeverity[FLAG_TYPES[f.type].severity]++;
   });
 
-  document.getElementById("exceptionsSummary").textContent =
-    `${lastExceptionFlags.length.toLocaleString()} flagged row(s) — ` +
-    `${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info`;
+  document.getElementById("exceptionsSummary").textContent = lastExceptionFlags.length === 0
+    ? "No exceptions found — this submission looks clean."
+    : `${lastExceptionFlags.length.toLocaleString()} row(s) flagged — ` +
+      `${bySeverity.critical} to fix now, ${bySeverity.warning} worth a look, ${bySeverity.info} for your info`;
 
   renderOverviewSummary(bySeverity);
 
@@ -575,25 +577,30 @@ function renderExceptionTable() {
     const tr = document.createElement("tr");
     tr.className = "exception-row";
 
-    const flagCell = document.createElement("td");
-    const wrap = document.createElement("span");
-    wrap.className = "status-item status-" + sev;
+    // "What to do" first (the actionable line), the flag type as a small
+    // status chip underneath (why it was picked up) — leads with the action
+    // a non-technical reviewer needs, not the internal rule name.
+    const actionCell = document.createElement("td");
+    const actionText = document.createElement("div");
+    actionText.textContent = ACTION_BY_FLAG[f.type];
+    const chip = document.createElement("span");
+    chip.className = "status-item status-" + sev;
     const icon = document.createElement("span");
     icon.className = "status-icon";
     icon.textContent = sev === "critical" ? "✕" : sev === "warning" ? "⚠" : "ⓘ";
-    const label = document.createElement("span");
-    label.textContent = FLAG_TYPES[f.type].label;
-    wrap.appendChild(icon);
-    wrap.appendChild(label);
-    flagCell.appendChild(wrap);
+    const chipLabel = document.createElement("span");
+    chipLabel.textContent = `${SEVERITY_LABEL[sev]} — ${FLAG_TYPES[f.type].label}`;
+    chip.appendChild(icon);
+    chip.appendChild(chipLabel);
+    actionCell.appendChild(actionText);
+    actionCell.appendChild(chip);
 
-    const actionTextCell = document.createElement("td");
-    actionTextCell.textContent = ACTION_BY_FLAG[f.type];
-
+    const store = state.stores.get(f.storeId);
+    const product = state.products.get(f.productId);
     const storeCell = document.createElement("td");
-    storeCell.textContent = f.storeId;
+    storeCell.textContent = store ? `${store.city} (${f.storeId})` : f.storeId;
     const productCell = document.createElement("td");
-    productCell.textContent = f.productId;
+    productCell.textContent = product ? `${product.product_family} (${f.productId})` : f.productId;
     const dateCell = document.createElement("td");
     dateCell.textContent = f.date;
     const detailCell = document.createElement("td");
@@ -603,11 +610,11 @@ function renderExceptionTable() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "link-button";
-    btn.textContent = "View";
+    btn.textContent = "View chart";
     btn.addEventListener("click", () => jumpToSeries(f.storeId, f.productId));
     viewCell.appendChild(btn);
 
-    tr.append(flagCell, actionTextCell, storeCell, productCell, dateCell, detailCell, viewCell);
+    tr.append(actionCell, storeCell, productCell, dateCell, detailCell, viewCell);
     tbody.appendChild(tr);
   });
 
@@ -951,7 +958,7 @@ function renderLegendInto(containerId, items) {
 function renderShapQuantileTabs() {
   const wrap = document.getElementById("shapQuantileTabs");
   wrap.textContent = "";
-  const labels = { "0.25": "P25", "0.5": "P50", "0.75": "P75", "0.95": "P95" };
+  const labels = { "0.25": "Low estimate", "0.5": "Typical", "0.75": "High estimate", "0.95": "Worst case" };
   SHAP_QUANTILES.forEach((q) => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -988,6 +995,7 @@ function renderShapPanel(storeId, productId) {
     const empty = svgEl("text", { x: WIDTH / 2, y: SHAP_HEIGHT / 2, "text-anchor": "middle", fill: "var(--text-muted)" });
     empty.textContent = "No SHAP rows for this store × product in the loaded file.";
     svg.appendChild(empty);
+    renderShapDetail(null);
     return;
   }
 
@@ -1054,6 +1062,7 @@ function renderShapPanel(storeId, productId) {
     let idx = Math.round(((mx - SHAP_MARGIN.left) / plotW) * (rows.length - 1));
     idx = Math.max(0, Math.min(rows.length - 1, idx));
     showShapTooltip(tooltip, rows[idx], e.clientX - rect.left, e.clientY - rect.top);
+    renderShapDetail(rows[idx]);
   });
   hit.addEventListener("pointerleave", () => { tooltip.style.display = "none"; });
 
@@ -1061,6 +1070,33 @@ function renderShapPanel(storeId, productId) {
     { swatch: "square", color: "var(--shap-pos)", label: "Pushes forecast up" },
     { swatch: "square", color: "var(--shap-neg)", label: "Pushes forecast down" },
   ]);
+
+  // default detail panel — most reviewers won't think to hover a chart, so
+  // show the first day's breakdown up front rather than an empty panel.
+  renderShapDetail(rows.find((r) => r.shap) || null);
+}
+
+// Shared with the tooltip: plain-language "what's driving this day's number"
+// used by the always-visible panel below the chart, updated on hover.
+function renderShapDetail(row) {
+  const el = document.getElementById("shapDetail");
+  if (!row || !row.shap) {
+    el.innerHTML = '<span class="muted">Point at a bar in the chart above to see what\'s driving that day\'s forecast.</span>';
+    return;
+  }
+  const factors = SHAP_BUCKETS
+    .map((b) => ({ ...b, v: row.shap.contribs[b.key] || 0 }))
+    .filter((b) => Math.abs(b.v) >= 0.05)
+    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
+    .slice(0, 4);
+
+  let html = `<strong>${formatDate(row.date)}</strong> — forecast ${Math.round(row.shap.prediction)}, starting point ${Math.round(row.shap.base)}.<br>`;
+  html += factors.length === 0
+    ? "No single factor stands out — the forecast is close to the starting point."
+    : "Biggest reasons: " + factors
+        .map((f) => `<strong>${f.label}</strong> ${f.v > 0 ? "pushes it up" : "pushes it down"} by ${Math.abs(f.v).toFixed(1)}`)
+        .join(", ") + ".";
+  el.innerHTML = html;
 }
 
 function showShapTooltip(tooltip, row, left, top) {
@@ -1101,8 +1137,8 @@ function showShapTooltip(tooltip, row, left, top) {
     tooltip.appendChild(rowEl);
   }
 
-  addRow(null, "Prediction", Math.round(row.shap.prediction));
-  addRow(null, "Baseline (no features)", Math.round(row.shap.base));
+  addRow(null, "Forecast for this day", Math.round(row.shap.prediction));
+  addRow(null, "Starting point (before adjustments)", Math.round(row.shap.base));
   SHAP_BUCKETS
     .map((b) => ({ ...b, v: row.shap.contribs[b.key] || 0 }))
     .filter((b) => Math.abs(b.v) >= 0.05)

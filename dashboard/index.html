@@ -11,12 +11,14 @@
 <p class="subtitle">Load Jan's submission CSV and browse it in context, store × product at a time.</p>
 
 <nav class="tab-nav" id="tabNav">
-  <button type="button" class="tab-btn" data-tab="overview">Overview</button>
+  <button type="button" class="tab-btn" data-tab="overview">Upload</button>
   <button type="button" class="tab-btn" data-tab="exceptions">Exceptions</button>
   <button type="button" class="tab-btn" data-tab="forecasts">Forecasts</button>
 </nav>
 
 <section class="tab-panel" id="tab-overview">
+
+  <p class="hint" style="margin:0 0 12px;">Start here: upload today's forecast file below. Once it's loaded, use the <strong>Exceptions</strong> tab to see what needs a look, or the <strong>Forecasts</strong> tab to browse a specific store and product.</p>
 
   <div class="card row">
     <div class="field">
@@ -48,10 +50,11 @@
 <section class="tab-panel" id="tab-exceptions" hidden>
 
   <div class="card" id="exceptionsCard" style="display:none">
-    <div class="hint" id="exceptionsSummary" style="font-weight:600; margin-bottom:12px;"></div>
+    <p class="hint" style="margin:0 0 12px;">These are forecast rows that might need a second look. We checked every row against Gustavo's review rules — each one below tells you what looks off and what to do about it.</p>
+    <div id="exceptionsSummary" style="font-weight:600; margin-bottom:12px;"></div>
     <div class="row" style="align-items:flex-end;">
       <div class="field">
-        <label for="exceptionFilter">Flag type</label>
+        <label for="exceptionFilter">Show</label>
         <select id="exceptionFilter"></select>
       </div>
       <div class="field">
@@ -78,7 +81,7 @@
     <div class="table-wrap">
       <table class="exception-table" id="exceptionTable">
         <thead>
-          <tr><th>Flag</th><th>Action</th><th>Store</th><th>Product</th><th>Date</th><th>Detail</th><th></th></tr>
+          <tr><th>What to do</th><th>Store</th><th>Product</th><th>Date</th><th>Why</th><th></th></tr>
         </thead>
         <tbody id="exceptionTableBody"></tbody>
       </table>
@@ -128,11 +131,12 @@
 
   <div class="card chart-wrap" id="shapCard" style="display:none">
     <strong>Why this forecast?</strong>
-    <p class="hint" style="margin:2px 0 10px">Each bar is one forecast day, split into how much each factor pushed that day's prediction above (red) or below (blue) the model's baseline. Hover a bar for the breakdown.</p>
+    <p class="hint" style="margin:2px 0 10px">Every forecast starts from a plain average, then gets adjusted up or down based on things like recent sales, promotions, and the calendar. Each bar below is one day — red means something pushed the number up, blue means something pushed it down. Point at a bar to see exactly what and why; the breakdown for a day also stays below the chart.</p>
     <div class="quantile-tabs" id="shapQuantileTabs"></div>
     <svg id="shapChart" width="820" height="200" viewBox="0 0 820 200"></svg>
     <div id="shapTooltip"></div>
     <div class="legend" id="shapLegend"></div>
+    <div class="info-panel" id="shapDetail" style="margin-top:12px;"></div>
   </div>
 
 </section>
