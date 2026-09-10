@@ -1,7 +1,24 @@
 // Minimal self-check for the non-trivial logic in app.js (CSV quoting,
 // monotonicity validation, holiday scope matching). Run: node test_app.js
 const assert = require("assert");
-const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExceptions, isPayday, FLAG_TYPES, ACTION_BY_FLAG, state } = require("./app.js");
+const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExceptions, isPayday, FLAG_TYPES, ACTION_BY_FLAG, parseShapCsv, state } = require("./app.js");
+
+// SHAP CSV parsing (format written by scripts/export_shap_for_dashboard.py):
+// nested by id -> quantile -> {base, prediction, contribs}, and bucket sums
+// must reproduce prediction - base (that's the whole point of SHAP additivity).
+const shapCsv = [
+  "id,quantile,base_value,prediction,contrib_sales_trend,contrib_promotion",
+  "t1,0.5,100,150,40,10",
+  "t1,0.25,90,120,20,10",
+].join("\n");
+const shapIndex = parseShapCsv(shapCsv);
+const t1p50 = shapIndex.get("t1").get("0.5");
+assert.strictEqual(t1p50.base, 100);
+assert.strictEqual(t1p50.prediction, 150);
+assert.strictEqual(t1p50.contribs.sales_trend, 40);
+assert.strictEqual(t1p50.contribs.promotion, 10);
+assert.strictEqual(t1p50.contribs.sales_trend + t1p50.contribs.promotion, t1p50.prediction - t1p50.base);
+assert.strictEqual(shapIndex.get("t1").get("0.25").base, 90);
 
 // Payday dates (3rd/18th of any month).
 assert.strictEqual(isPayday("2026-07-03"), true);

@@ -49,7 +49,22 @@ const state = {
   baselineById: new Map(),  // id -> {p25,p50,p75,p95}
   historyIndex: new Map(),  // "store|product" -> [{date, sales_count, promotion}, ...], last HISTORY_LOOKBACK_DAYS only
   submissionById: null,     // id -> {p25,p50,p75,p95}, set once a file is loaded
+  shapIndex: new Map(),     // id -> Map("0.25"|"0.5"|"0.75"|"0.95" -> {base, prediction, contribs: {bucket: value}})
 };
+
+// Matches the bucket names written by scripts/export_shap_for_dashboard.py —
+// SHAP contributions are additive, so these sum exactly to prediction - base.
+const SHAP_BUCKETS = [
+  { key: "sales_trend", label: "Recent sales trend" },
+  { key: "promotion", label: "Promotion" },
+  { key: "calendar", label: "Calendar (date/weekday)" },
+  { key: "holiday_event", label: "Holiday & events" },
+  { key: "product", label: "Product" },
+  { key: "store", label: "Store" },
+  { key: "oil_price", label: "Oil price" },
+  { key: "traffic", label: "Store traffic" },
+];
+const SHAP_QUANTILES = ["0.25", "0.5", "0.75", "0.95"];
 
 // ---------- CSV parsing ----------
 
@@ -173,6 +188,34 @@ function validateAndIndexSubmission(text) {
   for (const id of map.keys()) if (!state.testById.has(id)) extra++;
 
   return { schemaOk, header, map, monotonicViolations, missing, extra, total: map.size };
+}
+
+// ---------- SHAP explanation parsing ----------
+// Expects the CSV written by scripts/export_shap_for_dashboard.py:
+// id,quantile,base_value,prediction,contrib_<bucket>,... (one row per id×quantile)
+
+function parseShapCsv(text) {
+  const lines = text.split("\n");
+  const header = splitCSVLine((lines[0] || "").replace(/\r$/, ""));
+  const contribCols = header
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => h.startsWith("contrib_"));
+
+  const index = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    let line = lines[i];
+    if (!line) continue;
+    if (line.endsWith("\r")) line = line.slice(0, -1);
+    const f = splitCSVLine(line);
+    if (f.length < header.length) continue;
+    const id = f[0];
+    const contribs = {};
+    contribCols.forEach(({ h, i: colIdx }) => { contribs[h.slice("contrib_".length)] = +f[colIdx]; });
+    let byQuantile = index.get(id);
+    if (!byQuantile) { byQuantile = new Map(); index.set(id, byQuantile); }
+    byQuantile.set(f[1], { base: +f[2], prediction: +f[3], contribs });
+  }
+  return index;
 }
 
 function renderValidationStrip(v) {
@@ -313,6 +356,7 @@ function scanExceptions() {
 
 let selectedStoreId = null;
 let selectedProductId = null;
+let selectedShapQuantile = "0.5";
 
 function sortedIds(map) {
   return [...map.keys()].sort((a, b) => +a - +b);
@@ -430,6 +474,7 @@ function renderInfoPanels(storeId, productId) {
 function refreshSelection() {
   renderInfoPanels(selectedStoreId, selectedProductId);
   renderChart(selectedStoreId, selectedProductId);
+  renderShapPanel(selectedStoreId, selectedProductId);
 }
 
 function selectStore(id) {
@@ -855,20 +900,25 @@ function showTooltip(tooltip, r, holiday, left, top) {
 }
 
 function renderLegend() {
-  const legend = document.getElementById("legend");
-  legend.textContent = "";
-  const items = [
+  renderLegendInto("legend", [
     { swatch: "line", color: "var(--series-1)", label: "Submission (P50, P25–P95 band)" },
     { swatch: "dashed", color: "var(--series-2)", label: "Baseline P50" },
     { swatch: "line", color: "var(--text-secondary)", label: `Actual sales, last ${HISTORY_LOOKBACK_DAYS}d` },
     { swatch: "dot", color: "var(--series-3)", label: "Promotion day" },
-  ];
+  ]);
+}
+
+function renderLegendInto(containerId, items) {
+  const legend = document.getElementById(containerId);
+  legend.textContent = "";
   items.forEach((it) => {
     const div = document.createElement("div");
     div.className = "legend-item";
     const svg = svgEl("svg", { width: 16, height: 10, class: "legend-swatch" });
     if (it.swatch === "dot") {
       svg.appendChild(svgEl("circle", { cx: 8, cy: 5, r: 4, fill: it.color }));
+    } else if (it.swatch === "square") {
+      svg.appendChild(svgEl("rect", { x: 2, y: 1, width: 12, height: 8, fill: it.color }));
     } else {
       svg.appendChild(svgEl("line", {
         x1: 0, x2: 16, y1: 5, y2: 5, stroke: it.color, "stroke-width": 2,
@@ -881,6 +931,174 @@ function renderLegend() {
     div.appendChild(label);
     legend.appendChild(div);
   });
+}
+
+// ---------- SHAP explanation panel ----------
+
+function renderShapQuantileTabs() {
+  const wrap = document.getElementById("shapQuantileTabs");
+  wrap.textContent = "";
+  const labels = { "0.25": "P25", "0.5": "P50", "0.75": "P75", "0.95": "P95" };
+  SHAP_QUANTILES.forEach((q) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "quantile-tab" + (q === selectedShapQuantile ? " active" : "");
+    btn.textContent = labels[q];
+    btn.addEventListener("click", () => {
+      selectedShapQuantile = q;
+      renderShapPanel(selectedStoreId, selectedProductId);
+    });
+    wrap.appendChild(btn);
+  });
+}
+
+const SHAP_MARGIN = { top: 20, right: 20, bottom: 28, left: 50 };
+const SHAP_HEIGHT = 200;
+const SHAP_PLOT_H = SHAP_HEIGHT - SHAP_MARGIN.top - SHAP_MARGIN.bottom;
+
+function renderShapPanel(storeId, productId) {
+  const card = document.getElementById("shapCard");
+  if (state.shapIndex.size === 0) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  renderShapQuantileTabs();
+
+  const svg = document.getElementById("shapChart");
+  svg.textContent = "";
+
+  const points = state.seriesIndex.get(storeId + "|" + productId) || [];
+  const rows = points.map((pt) => ({
+    date: pt.date,
+    shap: (state.shapIndex.get(pt.id) || new Map()).get(selectedShapQuantile) || null,
+  }));
+
+  if (rows.every((r) => !r.shap)) {
+    const empty = svgEl("text", { x: WIDTH / 2, y: SHAP_HEIGHT / 2, "text-anchor": "middle", fill: "var(--text-muted)" });
+    empty.textContent = "No SHAP rows for this store × product in the loaded file.";
+    svg.appendChild(empty);
+    return;
+  }
+
+  const plotW = WIDTH - SHAP_MARGIN.left - SHAP_MARGIN.right;
+  const x = (i) => SHAP_MARGIN.left + (rows.length === 1 ? 0 : (i / (rows.length - 1)) * plotW);
+  const barWidth = Math.min(20, plotW / rows.length - 2);
+
+  // stacked, signed totals per row — feeds both the y-scale and the bars
+  const stacks = rows.map((r) => {
+    if (!r.shap) return null;
+    let pos = 0, neg = 0;
+    const segments = [];
+    SHAP_BUCKETS.forEach(({ key }) => {
+      const v = r.shap.contribs[key] || 0;
+      if (v > 0) { segments.push({ key, from: pos, to: pos + v, v }); pos += v; }
+      else if (v < 0) { segments.push({ key, from: neg, to: neg + v, v }); neg += v; }
+    });
+    return { segments, pos, neg };
+  });
+
+  let magnitude = 0;
+  stacks.forEach((s) => { if (s) magnitude = Math.max(magnitude, s.pos, -s.neg); });
+  const yMax = niceMax(magnitude * 1.15);
+  const centerY = SHAP_MARGIN.top + SHAP_PLOT_H / 2;
+  const y = (v) => centerY - (v / yMax) * (SHAP_PLOT_H / 2);
+
+  // zero baseline + magnitude reference ticks
+  svg.appendChild(svgEl("line", { x1: SHAP_MARGIN.left, x2: WIDTH - SHAP_MARGIN.right, y1: centerY, y2: centerY, stroke: "var(--axis)", "stroke-width": 1 }));
+  [yMax, -yMax].forEach((v) => {
+    const label = svgEl("text", { x: SHAP_MARGIN.left - 8, y: y(v) + 4, "text-anchor": "end", fill: "var(--text-muted)", "font-size": 11 });
+    label.textContent = (v > 0 ? "+" : "") + Math.round(v);
+    svg.appendChild(label);
+  });
+
+  // x tick labels
+  const labelStep = Math.max(1, Math.ceil(rows.length / 10));
+  rows.forEach((r, i) => {
+    if (i % labelStep !== 0 && i !== rows.length - 1) return;
+    const label = svgEl("text", { x: x(i), y: SHAP_HEIGHT - 8, "text-anchor": "middle", fill: "var(--text-muted)", "font-size": 11 });
+    label.textContent = formatDate(r.date);
+    svg.appendChild(label);
+  });
+
+  // bars
+  stacks.forEach((s, i) => {
+    if (!s) return;
+    const barX = x(i) - barWidth / 2;
+    s.segments.forEach((seg) => {
+      const y1 = y(seg.from), y2 = y(seg.to);
+      svg.appendChild(svgEl("rect", {
+        x: barX, y: Math.min(y1, y2), width: barWidth, height: Math.max(1, Math.abs(y2 - y1)),
+        fill: seg.v > 0 ? "var(--shap-pos)" : "var(--shap-neg)",
+      }));
+    });
+  });
+
+  // hover hit area + tooltip
+  const hit = svgEl("rect", { x: SHAP_MARGIN.left, y: SHAP_MARGIN.top, width: plotW, height: SHAP_PLOT_H, fill: "transparent" });
+  svg.appendChild(hit);
+  const tooltip = document.getElementById("shapTooltip");
+  hit.addEventListener("pointermove", (e) => {
+    const rect = svg.getBoundingClientRect();
+    const mx = ((e.clientX - rect.left) / rect.width) * WIDTH;
+    let idx = Math.round(((mx - SHAP_MARGIN.left) / plotW) * (rows.length - 1));
+    idx = Math.max(0, Math.min(rows.length - 1, idx));
+    showShapTooltip(tooltip, rows[idx], e.clientX - rect.left, e.clientY - rect.top);
+  });
+  hit.addEventListener("pointerleave", () => { tooltip.style.display = "none"; });
+
+  renderLegendInto("shapLegend", [
+    { swatch: "square", color: "var(--shap-pos)", label: "Pushes forecast up" },
+    { swatch: "square", color: "var(--shap-neg)", label: "Pushes forecast down" },
+  ]);
+}
+
+function showShapTooltip(tooltip, row, left, top) {
+  tooltip.textContent = "";
+  const dateRow = document.createElement("div");
+  dateRow.className = "tt-date";
+  dateRow.textContent = row.date;
+  tooltip.appendChild(dateRow);
+
+  if (!row.shap) {
+    const none = document.createElement("div");
+    none.className = "tt-row";
+    none.textContent = "No SHAP row for this date.";
+    tooltip.appendChild(none);
+    tooltip.style.left = (left + 12) + "px";
+    tooltip.style.top = (top + 12) + "px";
+    tooltip.style.display = "block";
+    return;
+  }
+
+  function addRow(color, label, value) {
+    const rowEl = document.createElement("div");
+    rowEl.className = "tt-row";
+    const leftEl = document.createElement("span");
+    leftEl.className = "tt-label";
+    if (color) {
+      const key = document.createElement("span");
+      key.className = "tt-key";
+      key.style.background = color;
+      leftEl.appendChild(key);
+    }
+    leftEl.appendChild(document.createTextNode(label));
+    const rightEl = document.createElement("span");
+    rightEl.className = "tt-value";
+    rightEl.textContent = value;
+    rowEl.appendChild(leftEl);
+    rowEl.appendChild(rightEl);
+    tooltip.appendChild(rowEl);
+  }
+
+  addRow(null, "Prediction", Math.round(row.shap.prediction));
+  addRow(null, "Baseline (no features)", Math.round(row.shap.base));
+  SHAP_BUCKETS
+    .map((b) => ({ ...b, v: row.shap.contribs[b.key] || 0 }))
+    .filter((b) => Math.abs(b.v) >= 0.05)
+    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
+    .forEach((b) => addRow(b.v > 0 ? "var(--shap-pos)" : "var(--shap-neg)", b.label, (b.v > 0 ? "+" : "") + b.v.toFixed(1)));
+
+  tooltip.style.left = (left + 12) + "px";
+  tooltip.style.top = (top + 12) + "px";
+  tooltip.style.display = "block";
 }
 
 // ---------- Wiring ----------
@@ -899,6 +1117,20 @@ if (typeof document !== "undefined") {
       renderExceptions();
       status.textContent = "Loaded " + file.name;
       if (selectedStoreId && selectedProductId) renderChart(selectedStoreId, selectedProductId);
+    };
+    reader.readAsText(file);
+  });
+
+  document.getElementById("shapInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = document.getElementById("shapLoadStatus");
+    status.textContent = "Reading " + file.name + "…";
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.shapIndex = parseShapCsv(reader.result);
+      status.textContent = `Loaded ${file.name} (${state.shapIndex.size.toLocaleString()} ids)`;
+      if (selectedStoreId && selectedProductId) renderShapPanel(selectedStoreId, selectedProductId);
     };
     reader.readAsText(file);
   });
@@ -922,6 +1154,7 @@ if (typeof document !== "undefined") {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     splitCSVLine, eventAppliesToStore, niceMax, formatDate, addDays, isPayday,
-    validateAndIndexSubmission, scanExceptions, FLAG_TYPES, ACTION_BY_FLAG, state,
+    validateAndIndexSubmission, scanExceptions, FLAG_TYPES, ACTION_BY_FLAG,
+    parseShapCsv, SHAP_BUCKETS, state,
   };
 }

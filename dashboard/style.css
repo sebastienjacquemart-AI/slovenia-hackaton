@@ -14,6 +14,10 @@
   --status-warning: #fab219;
   --status-critical: #d03b3b;
   --border: rgba(11, 11, 11, 0.10);
+  /* diverging pair for the SHAP explanation panel — pushes forecast up/down,
+     not a status; validated separately via dataviz's validate_palette.js */
+  --shap-pos: #c94a3d;
+  --shap-neg: #256abf;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,6 +34,8 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --border: rgba(255, 255, 255, 0.10);
+    --shap-pos: #e0685d;
+    --shap-neg: #3987e5;
   }
 }
 
@@ -183,7 +189,7 @@ select, input[type="file"] {
 
 .chart-wrap { position: relative; }
 
-#tooltip {
+#tooltip, #shapTooltip {
   position: absolute;
   pointer-events: none;
   background: var(--surface-1);
@@ -196,11 +202,28 @@ select, input[type="file"] {
   white-space: nowrap;
   z-index: 10;
 }
-#tooltip .tt-date { font-weight: 600; margin-bottom: 4px; }
-#tooltip .tt-row { display: flex; justify-content: space-between; gap: 12px; }
-#tooltip .tt-value { font-weight: 600; color: var(--text-primary); }
-#tooltip .tt-label { color: var(--text-secondary); }
-#tooltip .tt-key { display: inline-block; width: 14px; height: 2px; margin-right: 4px; vertical-align: middle; }
+#tooltip .tt-date, #shapTooltip .tt-date { font-weight: 600; margin-bottom: 4px; }
+#tooltip .tt-row, #shapTooltip .tt-row { display: flex; justify-content: space-between; gap: 12px; }
+#tooltip .tt-value, #shapTooltip .tt-value { font-weight: 600; color: var(--text-primary); }
+#tooltip .tt-label, #shapTooltip .tt-label { color: var(--text-secondary); }
+#tooltip .tt-key, #shapTooltip .tt-key { display: inline-block; width: 14px; height: 2px; margin-right: 4px; vertical-align: middle; }
+
+.quantile-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.quantile-tab {
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.quantile-tab.active {
+  color: var(--text-primary);
+  border-color: var(--text-primary);
+  font-weight: 600;
+}
 
 .muted { color: var(--text-muted); }
 .hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }

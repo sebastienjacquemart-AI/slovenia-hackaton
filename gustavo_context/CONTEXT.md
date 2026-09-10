@@ -482,3 +482,29 @@ front-end brief above:**
   effort for the least explicitly-requested payoff), and "store-product
   looks unusually different from that store's normal behaviour" /
   duplicate-forecast detection from v2's gap list.
+
+**v4 shipped (2026-09-10): SHAP explainability, per store×product.** Jan's
+`pipeline.forecast` computes exact SHAP contributions via LightGBM's native
+`pred_contrib=True` (this *is* TreeSHAP — mathematically the same output
+the `shap` PyPI package would give for a tree model, so there was no need
+to add that dependency). The raw sidecar (`*.shap.parquet`, 44 feature
+columns × 1.12M rows) is too wide/heavy to fetch and parse with no backend,
+so `scripts/export_shap_for_dashboard.py` sums the 44 features into 8
+domain buckets that mirror the feature groups already used throughout this
+doc (sales trend, promotion, calendar, holiday & events, product, store,
+oil price, traffic) — SHAP contributions are additive, so the buckets still
+sum exactly to `prediction - base_value` (verified against the real
+20260910 run: floating-point noise only, 1e-14). Output shrinks from a
+127MB parquet to a 74MB CSV, parses client-side in ~0.5-1.5s.
+- Dashboard: a second, optional file input loads this CSV. When loaded, a
+  "Why this forecast?" panel appears under the main chart — one diverging
+  stacked bar per forecast day (red = pushes the prediction up, blue =
+  pushes it down), P25/P50/P75/P95 tabs, hover for the exact per-bucket
+  breakdown. Independent of the main submission file — if no SHAP file is
+  loaded, or it doesn't cover the selected store/product, the panel just
+  stays hidden/says so.
+- Not built: linking the SHAP file to a *specific* submission run — if you
+  load a different submission than the one the SHAP file came from, the
+  panel won't warn you they're mismatched. In practice they're generated
+  together by the same `pipeline.forecast` run, so this hasn't come up, but
+  it's an honest gap if someone mixes files from two different runs.
