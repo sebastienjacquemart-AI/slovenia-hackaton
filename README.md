@@ -48,7 +48,7 @@ This creates a `data/` folder containing the files you need to get started.
 You must configure your team name before submitting:
 
 ```bash
-./forecasting-participant-cli team --name "Your Team Name"
+./forecasting-participant-cli team --name "I wish I was in the sauna"
 ```
 
 The CLI saves the name for future submissions. To check the currently saved name, run:
@@ -115,12 +115,69 @@ chmod +x forecasting-participant-cli
 
 ## Training pipeline
 
-The training workflow separates data merging, feature engineering, and model training.
-Run it from this directory:
+The training pipeline has three cached stages. It validates and merges the source CSVs,
+builds leakage-safe features, and trains a quantile model on a chronological holdout.
+Run these commands from `hackathon-slovenia/`:
 
 ```bash
+# Install the pipeline environment once.
+uv sync
+
+# Run all three stages with every feature group and LightGBM.
 uv run python -m pipeline all
 ```
 
-See [`pipeline/README.md`](pipeline/README.md) for stage commands, feature and model
-selection, cache behavior, outputs, and extension points.
+The default run holds out the final 28 days and writes its artifacts under
+`.cache/pipeline/`:
+
+```text
+.cache/pipeline/
+├── stage1_merged.parquet
+├── stage2_training_features.parquet
+└── stage3_lightgbm_report.json
+```
+
+The report includes the validation dates, row counts, and pinball loss for P25, P50,
+P75, and P95. A pipeline run evaluates a model. It does not create a submission CSV.
+
+### Run one or more stages
+
+The stage name is the last stage to run. Upstream stages run first when needed, and
+matching cached results are reused:
+
+```bash
+uv run python -m pipeline data                 # merge and validate source data
+uv run python -m pipeline features             # data plus feature engineering
+uv run python -m pipeline train                # data, features, and model training
+```
+
+Use the historical quantile model for a quick baseline:
+
+```bash
+uv run python -m pipeline all --model historical_quantile
+```
+
+Choose feature groups with a comma-separated list. The available groups are
+`identity`, `promotion`, `calendar`, `product`, `store`, `external`, and
+`sales_history`:
+
+```bash
+uv run python -m pipeline train \
+  --features sales_history,calendar,promotion,store
+```
+
+Other useful options are:
+
+```bash
+# Change the validation window and random seed.
+uv run python -m pipeline train --holdout-days 28 --seed 42
+
+# Rebuild every stage, ignoring matching cache entries.
+uv run python -m pipeline all --force
+
+# Keep artifacts in a different directory.
+uv run python -m pipeline all --cache-dir /path/to/cache
+```
+
+For the full list of feature definitions, model options, cache rules, and extension
+points, see [`pipeline/README.md`](pipeline/README.md).
