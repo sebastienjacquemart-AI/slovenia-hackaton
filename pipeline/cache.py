@@ -10,7 +10,6 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-
 CACHE_FORMAT_VERSION = 1
 
 
@@ -72,10 +71,9 @@ def run_cached_stage(
     fingerprint = stage_fingerprint(stage, inputs, code_files, parameters)
     if not force and output_path.is_file() and manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text())
-        if (
-            manifest.get("fingerprint") == fingerprint
-            and manifest.get("output_digest") == file_digest(output_path)
-        ):
+        if manifest.get("fingerprint") == fingerprint and manifest.get(
+            "output_digest"
+        ) == file_digest(output_path):
             return True, dict(manifest.get("metadata", {}))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -97,7 +97,7 @@ The registered groups are:
 | `calendar` | Year, month, day, weekday, week number, and weekend flag |
 | `product` | Product family, class, and perishability |
 | `store` | City, department, store type, and cluster |
-| `external` | Oil and event or holiday context |
+| `external` | Oil, store traffic, and event or holiday context |
 | `sales_history` | Sales lags plus rolling means and standard deviations |
 
 `--features all` selects every group. Stage 2 retains identifiers, the date, and the

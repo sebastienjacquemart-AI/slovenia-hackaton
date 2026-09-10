@@ -15,9 +15,7 @@ def effective_holiday_expression() -> pl.Expr:
 
 
 def effective_event_expression() -> pl.Expr:
-    return ~(
-        (pl.col("event_type") == "Holiday") & pl.col("is_transferred")
-    )
+    return ~((pl.col("event_type") == "Holiday") & pl.col("is_transferred"))
 
 
 def add_holiday_distances(
@@ -67,12 +65,8 @@ def add_holiday_distances(
             pl.col("days_since_effective_holiday").fill_null(-1),
         )
         .with_columns(
-            (pl.col("days_until_effective_holiday") == 1).alias(
-                "is_1d_before_holiday"
-            ),
-            (pl.col("days_until_effective_holiday") == 2).alias(
-                "is_2d_before_holiday"
-            ),
+            (pl.col("days_until_effective_holiday") == 1).alias("is_1d_before_holiday"),
+            (pl.col("days_until_effective_holiday") == 2).alias("is_2d_before_holiday"),
         )
     )
 
@@ -92,10 +86,7 @@ def build_event_context(
             (pl.col("scope") == "Regional")
             & (pl.col("location") == pl.col("department"))
         )
-        | (
-            (pl.col("scope") == "Local")
-            & (pl.col("location") == pl.col("city"))
-        )
+        | ((pl.col("scope") == "Local") & (pl.col("location") == pl.col("city")))
     )
     unmatched = events_with_id.join(
         expanded.select("_event_id").unique(), on="_event_id", how="anti"
@@ -165,7 +156,11 @@ def build_daily_oil_context(
     if int(scalar(summary, "invalid_prices")):
         raise ValueError("index_oil.csv contains invalid non-null prices")
     dates = pl.DataFrame(
-        {"date": pl.date_range(start=start_date, end=end_date, interval="1d", eager=True)}
+        {
+            "date": pl.date_range(
+                start=start_date, end=end_date, interval="1d", eager=True
+            )
+        }
     )
     return (
         dates.join(oil, on="date", how="left")

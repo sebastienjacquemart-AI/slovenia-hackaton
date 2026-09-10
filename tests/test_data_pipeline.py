@@ -35,9 +35,7 @@ class EventContextTests(unittest.TestCase):
         context, unmatched = build_event_context(events, stores)
 
         self.assertEqual(unmatched.height, 1)
-        counts = dict(
-            context.select("store_id", "event_count").iter_rows()
-        )
+        counts = dict(context.select("store_id", "event_count").iter_rows())
         self.assertEqual(counts, {1: 2, 2: 2})
         store_one = context.filter(pl.col("store_id") == 1).row(0, named=True)
         store_two = context.filter(pl.col("store_id") == 2).row(0, named=True)
@@ -113,9 +111,7 @@ class OilContextTests(unittest.TestCase):
             }
         )
 
-        result = build_daily_oil_context(
-            oil, date(2026, 1, 1), date(2026, 1, 5)
-        )
+        result = build_daily_oil_context(oil, date(2026, 1, 1), date(2026, 1, 5))
 
         self.assertEqual(
             result.get_column("oil_price").to_list(),

@@ -18,9 +18,9 @@ from pipeline.forecast import (
     write_shap_values,
 )
 from pipeline.models import MODELS, get_model
-from pipeline.stockouts import likely_stockout_flags
 from pipeline.stages.feature_engineering import build_training_features
 from pipeline.stages.model_training import train_and_evaluate
+from pipeline.stockouts import likely_stockout_flags
 
 
 class CacheTests(unittest.TestCase):
@@ -85,7 +85,10 @@ class FeatureStageTests(unittest.TestCase):
             rows = 35
             pl.DataFrame(
                 {
-                    "date": [date(2026, 1, 1) + timedelta(days=index) for index in range(rows)],
+                    "date": [
+                        date(2026, 1, 1) + timedelta(days=index)
+                        for index in range(rows)
+                    ],
                     "store_id": [1] * rows,
                     "product_id": [10] * rows,
                     "id": list(range(rows)),
@@ -214,9 +217,7 @@ class ModelStageTests(unittest.TestCase):
             explanations.source_quantiles[0],
             [[0.50, 0.75, 0.25, 0.95], [0.25, 0.75, 0.95, 0.50]],
         )
-        reconstructed = (
-            explanations.base_values + explanations.shap_values.sum(axis=-1)
-        )
+        reconstructed = explanations.base_values + explanations.shap_values.sum(axis=-1)
         np.testing.assert_allclose(reconstructed, explanations.raw_predictions)
 
     def test_shap_sidecar_is_aligned_to_test_ids(self) -> None:

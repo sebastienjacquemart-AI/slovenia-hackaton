@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import polars as pl
 
-
 QUANTILES = (0.25, 0.50, 0.75, 0.95)
+
+
+@dataclass(frozen=True)
+class LightGBMConfig:
+    num_boost_round: int = 250
+    learning_rate: float = 0.05
+    num_leaves: int = 31
+    min_data_in_leaf: int = 20
+    feature_fraction: float = 1.0
+    bagging_fraction: float = 1.0
+    bagging_freq: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 PredictionFunction = Callable[
-    [pl.DataFrame, pl.DataFrame, list[str], int], tuple[list[list[float]], dict[str, Any]]
+    [pl.DataFrame, pl.DataFrame, list[str], int, LightGBMConfig],
+    tuple[list[list[float]], dict[str, Any]],
 ]
 
 
@@ -19,14 +36,15 @@ def historical_quantile_predictions(
     validation: pl.DataFrame,
     feature_columns: list[str],
     seed: int,
+    config: LightGBMConfig,
 ) -> tuple[list[list[float]], dict[str, Any]]:
-    del feature_columns, seed
-    prediction_names = [f"prediction_p{int(quantile * 100):02d}" for quantile in QUANTILES]
+    del feature_columns, seed, config
+    prediction_names = [
+        f"prediction_p{int(quantile * 100):02d}" for quantile in QUANTILES
+    ]
     per_series = training.group_by("store_id", "product_id").agg(
         *[
-            pl.col("sales_count")
-            .quantile(quantile, interpolation="linear")
-            .alias(name)
+            pl.col("sales_count").quantile(quantile, interpolation="linear").alias(name)
             for quantile, name in zip(QUANTILES, prediction_names, strict=True)
         ]
     )
@@ -49,6 +67,7 @@ def lightgbm_predictions(
     validation: pl.DataFrame,
     feature_columns: list[str],
     seed: int,
+    config: LightGBMConfig,
 ) -> tuple[list[list[float]], dict[str, Any]]:
     try:
         import numpy as np
@@ -68,18 +87,22 @@ def lightgbm_predictions(
             {
                 "objective": "quantile",
                 "alpha": quantile,
-                "learning_rate": 0.05,
-                "num_leaves": 31,
+                "learning_rate": config.learning_rate,
+                "num_leaves": config.num_leaves,
+                "min_data_in_leaf": config.min_data_in_leaf,
+                "feature_fraction": config.feature_fraction,
+                "bagging_fraction": config.bagging_fraction,
+                "bagging_freq": config.bagging_freq,
                 "seed": seed,
                 "verbosity": -1,
             },
             Dataset(train_features, label=train_targets),
-            num_boost_round=250,
+            num_boost_round=config.num_boost_round,
         )
         columns.append(np.maximum(model.predict(validation_features), 0.0))
     predictions = np.maximum.accumulate(np.column_stack(columns), axis=1)
     return predictions.tolist(), {
-        "estimators_per_quantile": 250,
+        **config.as_dict(),
         "feature_count": len(feature_columns),
     }
 

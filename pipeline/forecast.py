@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,7 +15,6 @@ import pandas as pd
 import polars as pl
 
 from .stockouts import likely_stockout_for_last_day
-
 
 QUANTILES = (0.25, 0.50, 0.75, 0.95)
 LAGS = (1, 7, 14, 28)
@@ -132,6 +131,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-boost-round", type=int, default=250)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--num-leaves", type=int, default=31)
+    parser.add_argument("--min-data-in-leaf", type=int, default=200)
+    parser.add_argument("--feature-fraction", type=float, default=0.9)
+    parser.add_argument("--bagging-fraction", type=float, default=0.9)
+    parser.add_argument("--bagging-freq", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260910)
     parser.add_argument("--threads", type=int, default=-1)
     parser.add_argument(
@@ -143,7 +146,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_feature_groups(raw_groups: str) -> tuple[str, ...]:
-    requested = {group.strip().lower() for group in raw_groups.split(",") if group.strip()}
+    requested = {
+        group.strip().lower() for group in raw_groups.split(",") if group.strip()
+    }
     requested.discard("sales")
     if "all" in requested:
         requested.remove("all")
@@ -155,7 +160,7 @@ def parse_feature_groups(raw_groups: str) -> tuple[str, ...]:
 
 
 def unique_prediction_path(approach_dir: Path, run_name: str) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_id = uuid4().hex[:8]
     return approach_dir / "predictions" / f"{timestamp}_{run_name}_{run_id}.csv"
 
@@ -169,9 +174,13 @@ def load_sales_panel(path: Path) -> SalesPanel:
     )
     duplicate_count = int(frame.duplicated(["date", "store_id", "product_id"]).sum())
     if duplicate_count:
-        raise ValueError(f"sales history has {duplicate_count} duplicate date/pair rows")
+        raise ValueError(
+            f"sales history has {duplicate_count} duplicate date/pair rows"
+        )
 
-    wide = frame.pivot(index="date", columns=["store_id", "product_id"], values="sales_count")
+    wide = frame.pivot(
+        index="date", columns=["store_id", "product_id"], values="sales_count"
+    )
     wide = wide.sort_index().sort_index(axis=1)
     if wide.isna().any().any():
         raise ValueError("sales history is not a complete date by store/product panel")
@@ -179,7 +188,9 @@ def load_sales_panel(path: Path) -> SalesPanel:
         raise ValueError("sales history contains negative values")
     return SalesPanel(
         dates=pd.DatetimeIndex(wide.index),
-        pairs=pd.MultiIndex.from_tuples(wide.columns.tolist(), names=["store_id", "product_id"]),
+        pairs=pd.MultiIndex.from_tuples(
+            wide.columns.tolist(), names=["store_id", "product_id"]
+        ),
         values=wide.to_numpy(dtype=np.float32, copy=True),
     )
 
@@ -194,9 +205,7 @@ def load_context_panel(
             f"{path} does not exist; run `uv run python -m pipeline data` first"
         )
     feature_names = tuple(
-        feature
-        for group in feature_groups
-        for feature in CONTEXT_FEATURE_GROUPS[group]
+        feature for group in feature_groups for feature in CONTEXT_FEATURE_GROUPS[group]
     )
     categorical_names = tuple(
         feature for feature in feature_names if feature in CATEGORICAL_CONTEXT_FEATURES
@@ -218,8 +227,7 @@ def load_context_panel(
             expression = expression.fill_null(0)
         expressions.append(expression.cast(pl.Float32).alias(feature))
     frame = (
-        source
-        .sort(["date", "store_id", "product_id"])
+        source.sort(["date", "store_id", "product_id"])
         .select(
             "date",
             pl.col("store_id").alias("_store_key"),
@@ -233,10 +241,14 @@ def load_context_panel(
     dates = pd.DatetimeIndex(frame["date"].unique(maintain_order=True).to_list())
     series_count = len(sales_panel.pairs)
     if frame.height != len(dates) * series_count:
-        raise ValueError("processed context is not a complete date by store/product panel")
-    first_date_pairs = frame.filter(pl.col("date") == frame["date"][0]).select(
-        "_store_key", "_product_key"
-    ).to_numpy()
+        raise ValueError(
+            "processed context is not a complete date by store/product panel"
+        )
+    first_date_pairs = (
+        frame.filter(pl.col("date") == frame["date"][0])
+        .select("_store_key", "_product_key")
+        .to_numpy()
+    )
     expected_pairs = np.column_stack(
         [
             sales_panel.pairs.get_level_values("store_id"),
@@ -244,11 +256,17 @@ def load_context_panel(
         ]
     )
     if not np.array_equal(first_date_pairs, expected_pairs):
-        raise ValueError("processed context store/product pairs do not align with sales history")
+        raise ValueError(
+            "processed context store/product pairs do not align with sales history"
+        )
     if not dates[: len(sales_panel.dates)].equals(sales_panel.dates):
-        raise ValueError("processed context dates do not begin with the sales history dates")
-    values = frame.select(feature_names).to_numpy().reshape(
-        len(dates), series_count, len(feature_names)
+        raise ValueError(
+            "processed context dates do not begin with the sales history dates"
+        )
+    values = (
+        frame.select(feature_names)
+        .to_numpy()
+        .reshape(len(dates), series_count, len(feature_names))
     )
     return ContextPanel(
         dates=dates,
@@ -321,10 +339,10 @@ def train_models(
             "metric": "quantile",
             "learning_rate": args.learning_rate,
             "num_leaves": args.num_leaves,
-            "min_data_in_leaf": 200,
-            "feature_fraction": 0.9,
-            "bagging_fraction": 0.9,
-            "bagging_freq": 1,
+            "min_data_in_leaf": args.min_data_in_leaf,
+            "feature_fraction": args.feature_fraction,
+            "bagging_fraction": args.bagging_fraction,
+            "bagging_freq": args.bagging_freq,
             "seed": args.seed,
             "feature_fraction_seed": args.seed,
             "bagging_seed": args.seed,
@@ -431,7 +449,9 @@ def evaluate_holdout(
             f"requested {split_end} split days but history has {panel.values.shape[0]}"
         )
     context_values = None if context is None else context.values
-    feature_names = FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    feature_names = (
+        FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    )
     categorical_names = () if context is None else context.categorical_feature_names
     features, targets = make_supervised(panel.values, args.train_days, context_values)
     models = train_models(
@@ -453,7 +473,7 @@ def evaluate_holdout(
         args.holdout_days,
         holdout_context,
     )
-    actual = panel.values[args.train_days:split_end]
+    actual = panel.values[args.train_days : split_end]
     metrics = {
         f"pinball_p{int(quantile * 100):02d}": pinball_loss(
             actual, forecast[:, :, index], quantile
@@ -487,7 +507,9 @@ def write_submission(
     sample = pd.read_csv(sample_path)
     expected_columns = ["id"] + [f"sales_count_p{int(q * 100):02d}" for q in QUANTILES]
     if list(sample.columns) != expected_columns:
-        raise ValueError(f"unexpected sample submission columns: {list(sample.columns)}")
+        raise ValueError(
+            f"unexpected sample submission columns: {list(sample.columns)}"
+        )
     if len(test) != len(sample) or not np.array_equal(test["id"], sample["id"]):
         raise ValueError("test IDs do not exactly match the sample submission")
 
@@ -498,7 +520,9 @@ def write_submission(
     test_pairs = pd.MultiIndex.from_frame(test[["store_id", "product_id"]])
     pair_positions = panel.pairs.get_indexer(test_pairs)
     if (date_positions < 0).any() or (pair_positions < 0).any():
-        raise ValueError("test contains dates or store/product pairs missing from the forecast")
+        raise ValueError(
+            "test contains dates or store/product pairs missing from the forecast"
+        )
 
     ordered_forecasts = forecasts[date_positions, pair_positions]
     submission = pd.DataFrame({"id": sample["id"]})
@@ -510,7 +534,9 @@ def write_submission(
         raise ValueError("submission quantiles cross")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
-        raise FileExistsError(f"refusing to overwrite existing prediction file: {output_path}")
+        raise FileExistsError(
+            f"refusing to overwrite existing prediction file: {output_path}"
+        )
     submission.to_csv(output_path, index=False, float_format="%.6f")
     print(f"Wrote {len(submission):,} rows to {output_path}")
 
@@ -557,9 +583,7 @@ def write_shap_values(
         "source_model_quantile": ordered_sources.reshape(-1),
         "raw_prediction": ordered_raw.reshape(-1),
         "submitted_prediction": ordered_forecasts.reshape(-1),
-        "postprocessing_adjustment": (
-            ordered_forecasts - ordered_raw
-        ).reshape(-1),
+        "postprocessing_adjustment": (ordered_forecasts - ordered_raw).reshape(-1),
         "base_value": ordered_base.reshape(-1),
     }
     for index, feature_name in enumerate(feature_names):
@@ -567,7 +591,9 @@ def write_shap_values(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
-        raise FileExistsError(f"refusing to overwrite existing SHAP file: {output_path}")
+        raise FileExistsError(
+            f"refusing to overwrite existing SHAP file: {output_path}"
+        )
     pl.DataFrame(columns).write_parquet(output_path, compression="zstd")
     print(f"Wrote {row_count * len(QUANTILES):,} SHAP rows to {output_path}")
 
@@ -596,7 +622,9 @@ def main() -> None:
         evaluate_holdout(panel, args, run_artifacts_dir, context)
 
     context_values = None if context is None else context.values
-    feature_names = FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    feature_names = (
+        FEATURE_NAMES if context is None else FEATURE_NAMES + context.feature_names
+    )
     categorical_names = () if context is None else context.categorical_feature_names
     features, targets = make_supervised(
         panel.values, panel.values.shape[0], context_values
@@ -609,7 +637,9 @@ def main() -> None:
         feature_names,
         categorical_names,
     )
-    test = pd.read_csv(args.data_dir / "test.csv", usecols=["date"], parse_dates=["date"])
+    test = pd.read_csv(
+        args.data_dir / "test.csv", usecols=["date"], parse_dates=["date"]
+    )
     horizon = test["date"].nunique()
     future_context = (
         None

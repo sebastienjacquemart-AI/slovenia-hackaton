@@ -9,14 +9,14 @@ from typing import Any
 
 import polars as pl
 
-from pipeline.models import QUANTILES, get_model
+from pipeline.models import QUANTILES, LightGBMConfig, get_model
 
 
 def _pinball(actual: pl.Series, predicted: pl.Series, quantile: float) -> float:
     error = actual.log1p() - predicted.clip(lower_bound=0).log1p()
-    loss = error.clip(lower_bound=0) * quantile + (-error).clip(
-        lower_bound=0
-    ) * (1 - quantile)
+    loss = error.clip(lower_bound=0) * quantile + (-error).clip(lower_bound=0) * (
+        1 - quantile
+    )
     return float(loss.mean())
 
 
@@ -26,6 +26,7 @@ def train_and_evaluate(
     model_name: str,
     holdout_days: int,
     seed: int,
+    model_config: LightGBMConfig | None = None,
 ) -> dict[str, Any]:
     if holdout_days < 1:
         raise ValueError("holdout_days must be at least 1")
@@ -44,8 +45,10 @@ def train_and_evaluate(
         column for column in dataset.columns if column.startswith("feature_")
     ]
     predictor = get_model(model_name)
+    if model_config is None:
+        model_config = LightGBMConfig()
     prediction_rows, model_metadata = predictor(
-        training, validation, feature_columns, seed
+        training, validation, feature_columns, seed, model_config
     )
     prediction_columns = [
         f"prediction_p{int(quantile * 100):02d}" for quantile in QUANTILES
