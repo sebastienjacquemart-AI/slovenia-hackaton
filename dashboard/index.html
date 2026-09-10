@@ -22,6 +22,25 @@
   <div class="status-list" id="validationList"></div>
 </div>
 
+<div class="card" id="exceptionsCard" style="display:none">
+  <div class="row" style="justify-content:space-between; align-items:baseline;">
+    <strong id="exceptionsSummary"></strong>
+    <div class="field" style="min-width:260px;">
+      <label for="exceptionFilter">Filter</label>
+      <select id="exceptionFilter"></select>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="exception-table" id="exceptionTable">
+      <thead>
+        <tr><th>Flag</th><th>Store</th><th>Product</th><th>Date</th><th>Detail</th><th></th></tr>
+      </thead>
+      <tbody id="exceptionTableBody"></tbody>
+    </table>
+  </div>
+  <div class="hint" id="exceptionMoreHint"></div>
+</div>
+
 <div class="card row">
   <div class="field">
     <label for="storeSelect">Store</label>

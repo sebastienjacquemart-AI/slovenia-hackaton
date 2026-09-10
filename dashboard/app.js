@@ -5,6 +5,24 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const EXPECTED_HEADER = ["id", "sales_count_p25", "sales_count_p50", "sales_count_p75", "sales_count_p95"];
 
+// ponytail: coarse staple/discretionary split by product_family text (per
+// Gustavo/Olivier's risk-tier notes — no ready-made staple flag exists in
+// the data). Good enough to triage, not to automate stocking decisions on.
+const STAPLE_FAMILIES = new Set([
+  "BREAD/BAKERY", "DAIRY", "EGGS", "CLEANING", "HOME CARE",
+  "PERSONAL CARE", "GROCERY I", "POULTRY", "PRODUCE",
+]);
+
+const FLAG_TYPES = {
+  monotonicity: { label: "Quantile order violated (P25≤P50≤P75≤P95)", severity: "critical" },
+  perishable_spike: { label: "Perishable: P95 ≫ P50 (stockout risk)", severity: "warning" },
+  promo_no_lift: { label: "Promoted day, no forecast lift", severity: "warning" },
+  holiday_flat: { label: "Holiday/pre-holiday treated as normal", severity: "warning" },
+  essential_low: { label: "Essential item, P50 = 0", severity: "warning" },
+  baseline_deviation: { label: "Large deviation from baseline", severity: "info" },
+};
+const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 };
+
 const state = {
   stores: new Map(),        // store_id -> {city, department, store_type, store_cluster}
   products: new Map(),      // product_id -> {product_family, product_class, is_perishable}
@@ -159,6 +177,97 @@ function renderValidationStrip(v) {
       `${v.monotonicViolations} row(s) violate P25 ≤ P50 ≤ P75 ≤ P95`);
 }
 
+// ---------- Exception scanning (Gustavo's review checklist, run across all rows) ----------
+
+function buildHolidayAdjacentSetsByStore() {
+  const map = new Map(); // storeId -> Set(dates that are a holiday, or the day before one)
+  for (const [storeId, store] of state.stores) {
+    const holidayDates = new Set();
+    state.events.forEach((ev) => {
+      if (eventAppliesToStore(ev, store)) holidayDates.add(ev.date);
+    });
+    const adjacent = new Set(holidayDates);
+    holidayDates.forEach((d) => adjacent.add(addDays(d, -1)));
+    map.set(storeId, adjacent);
+  }
+  return map;
+}
+
+function buildSeriesStats(holidaySetsByStore) {
+  const stats = new Map(); // "store|product" -> {nonPromoAvg, nonHolidayAvg} (P50, submission)
+  for (const [key, points] of state.seriesIndex) {
+    const storeId = key.split("|")[0];
+    const holidaySet = holidaySetsByStore.get(storeId);
+    let nonPromoSum = 0, nonPromoCount = 0, nonHolidaySum = 0, nonHolidayCount = 0;
+    points.forEach((pt) => {
+      const sub = state.submissionById.get(pt.id);
+      if (!sub) return;
+      if (pt.promotion !== "True") { nonPromoSum += sub.p50; nonPromoCount++; }
+      if (!holidaySet.has(pt.date)) { nonHolidaySum += sub.p50; nonHolidayCount++; }
+    });
+    stats.set(key, {
+      nonPromoAvg: nonPromoCount ? nonPromoSum / nonPromoCount : null,
+      nonHolidayAvg: nonHolidayCount ? nonHolidaySum / nonHolidayCount : null,
+    });
+  }
+  return stats;
+}
+
+function scanExceptions() {
+  const flags = [];
+  if (!state.submissionById) return flags;
+
+  const holidaySetsByStore = buildHolidayAdjacentSetsByStore();
+  const seriesStats = buildSeriesStats(holidaySetsByStore);
+
+  for (const [id, sub] of state.submissionById) {
+    const t = state.testById.get(id);
+    if (!t) continue; // unexpected id — already surfaced by the validation strip
+    const product = state.products.get(t.product_id);
+    const store = state.stores.get(t.store_id);
+    if (!product || !store) continue;
+
+    function addFlag(type, detail) {
+      flags.push({ id, storeId: t.store_id, productId: t.product_id, date: t.date, type, detail });
+    }
+
+    if (!(sub.p25 <= sub.p50 && sub.p50 <= sub.p75 && sub.p75 <= sub.p95)) {
+      addFlag("monotonicity", `P25 ${sub.p25} / P50 ${sub.p50} / P75 ${sub.p75} / P95 ${sub.p95} out of order`);
+    }
+
+    if (product.is_perishable === "1") {
+      const spiked = sub.p50 === 0 ? sub.p95 >= 3 : sub.p95 / sub.p50 >= 2;
+      if (spiked) addFlag("perishable_spike", `P50 ${sub.p50} but P95 ${sub.p95}`);
+    }
+
+    const stats = seriesStats.get(t.store_id + "|" + t.product_id);
+    if (t.promotion === "True" && stats && stats.nonPromoAvg !== null && stats.nonPromoAvg > 0.5 &&
+        sub.p50 <= stats.nonPromoAvg * 1.05) {
+      addFlag("promo_no_lift", `P50 ${sub.p50} vs. this series' typical non-promo P50 ${stats.nonPromoAvg.toFixed(1)}`);
+    }
+
+    const holidaySet = holidaySetsByStore.get(t.store_id);
+    if (holidaySet.has(t.date) && stats && stats.nonHolidayAvg !== null && stats.nonHolidayAvg > 0.5) {
+      const diffRatio = Math.abs(sub.p50 - stats.nonHolidayAvg) / stats.nonHolidayAvg;
+      if (diffRatio < 0.1) addFlag("holiday_flat", `P50 ${sub.p50} ≈ this series' normal-day average ${stats.nonHolidayAvg.toFixed(1)}`);
+    }
+
+    if (STAPLE_FAMILIES.has(product.product_family) && sub.p50 === 0 && sub.p95 > 0) {
+      addFlag("essential_low", `Median forecast is 0 (P95 ${sub.p95}), family ${product.product_family}`);
+    }
+
+    const base = state.baselineById.get(id);
+    if (base) {
+      const rel = Math.abs(sub.p50 - base.p50) / Math.max(base.p50, 1);
+      if (rel >= 1.0 && Math.abs(sub.p50 - base.p50) >= 3) {
+        addFlag("baseline_deviation", `Submission P50 ${sub.p50} vs. baseline P50 ${base.p50} (${Math.round(rel * 100)}% relative difference)`);
+      }
+    }
+  }
+
+  return flags;
+}
+
 // ---------- Dropdowns & info panels ----------
 
 function storeLabel(id) {
@@ -213,6 +322,112 @@ function onSelectionChange() {
   renderChart(storeId, productId);
 }
 
+function jumpToSeries(storeId, productId) {
+  document.getElementById("storeSelect").value = storeId;
+  document.getElementById("productSelect").value = productId;
+  onSelectionChange();
+  document.getElementById("chart").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// ---------- Exceptions table ----------
+
+let lastExceptionFlags = [];
+let exceptionFilterType = "all";
+const MAX_EXCEPTION_ROWS = 300;
+
+function renderExceptions() {
+  const card = document.getElementById("exceptionsCard");
+  if (!state.submissionById) { card.style.display = "none"; return; }
+  card.style.display = "block";
+
+  lastExceptionFlags = scanExceptions();
+
+  const counts = {};
+  const bySeverity = { critical: 0, warning: 0, info: 0 };
+  lastExceptionFlags.forEach((f) => {
+    counts[f.type] = (counts[f.type] || 0) + 1;
+    bySeverity[FLAG_TYPES[f.type].severity]++;
+  });
+
+  document.getElementById("exceptionsSummary").textContent =
+    `${lastExceptionFlags.length.toLocaleString()} flagged row(s) — ` +
+    `${bySeverity.critical} critical, ${bySeverity.warning} warning, ${bySeverity.info} info`;
+
+  const filterSelect = document.getElementById("exceptionFilter");
+  filterSelect.textContent = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "all";
+  allOpt.textContent = `All (${lastExceptionFlags.length})`;
+  filterSelect.appendChild(allOpt);
+  Object.keys(FLAG_TYPES).forEach((type) => {
+    if (!counts[type]) return;
+    const opt = document.createElement("option");
+    opt.value = type;
+    opt.textContent = `${FLAG_TYPES[type].label} (${counts[type]})`;
+    filterSelect.appendChild(opt);
+  });
+  filterSelect.value = exceptionFilterType;
+  filterSelect.onchange = () => {
+    exceptionFilterType = filterSelect.value;
+    renderExceptionTable();
+  };
+
+  renderExceptionTable();
+}
+
+function renderExceptionTable() {
+  const tbody = document.getElementById("exceptionTableBody");
+  tbody.textContent = "";
+
+  const filtered = lastExceptionFlags
+    .filter((f) => exceptionFilterType === "all" || f.type === exceptionFilterType)
+    .sort((a, b) => SEVERITY_RANK[FLAG_TYPES[a.type].severity] - SEVERITY_RANK[FLAG_TYPES[b.type].severity] || a.date.localeCompare(b.date));
+
+  const shown = filtered.slice(0, MAX_EXCEPTION_ROWS);
+  shown.forEach((f) => {
+    const sev = FLAG_TYPES[f.type].severity;
+    const tr = document.createElement("tr");
+    tr.className = "exception-row";
+
+    const flagCell = document.createElement("td");
+    const wrap = document.createElement("span");
+    wrap.className = "status-item status-" + sev;
+    const icon = document.createElement("span");
+    icon.className = "status-icon";
+    icon.textContent = sev === "critical" ? "✕" : sev === "warning" ? "⚠" : "ⓘ";
+    const label = document.createElement("span");
+    label.textContent = FLAG_TYPES[f.type].label;
+    wrap.appendChild(icon);
+    wrap.appendChild(label);
+    flagCell.appendChild(wrap);
+
+    const storeCell = document.createElement("td");
+    storeCell.textContent = f.storeId;
+    const productCell = document.createElement("td");
+    productCell.textContent = f.productId;
+    const dateCell = document.createElement("td");
+    dateCell.textContent = f.date;
+    const detailCell = document.createElement("td");
+    detailCell.textContent = f.detail;
+
+    const actionCell = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "link-button";
+    btn.textContent = "View";
+    btn.addEventListener("click", () => jumpToSeries(f.storeId, f.productId));
+    actionCell.appendChild(btn);
+
+    tr.append(flagCell, storeCell, productCell, dateCell, detailCell, actionCell);
+    tbody.appendChild(tr);
+  });
+
+  const hint = document.getElementById("exceptionMoreHint");
+  hint.textContent = filtered.length > shown.length
+    ? `Showing first ${shown.length.toLocaleString()} of ${filtered.length.toLocaleString()} — narrow the filter to see more.`
+    : "";
+}
+
 // ---------- Holiday matching ----------
 
 function eventAppliesToStore(event, store) {
@@ -241,6 +456,13 @@ function niceMax(v) {
 function formatDate(dateStr) {
   const [y, m, d] = dateStr.split("-");
   return MONTHS[+m - 1] + " " + (+d);
+}
+
+function addDays(dateStr, n) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return dt.toISOString().slice(0, 10);
 }
 
 function svgEl(tag, attrs) {
@@ -465,6 +687,7 @@ if (typeof document !== "undefined") {
       const result = validateAndIndexSubmission(reader.result);
       state.submissionById = result.map;
       renderValidationStrip(result);
+      renderExceptions();
       status.textContent = "Loaded " + file.name;
       const storeId = document.getElementById("storeSelect").value;
       const productId = document.getElementById("productSelect").value;
@@ -486,7 +709,10 @@ if (typeof document !== "undefined") {
   })();
 }
 
-// Exposed for the self-check in test_app.mjs — no effect in the browser.
+// Exposed for the self-check in test_app.js — no effect in the browser.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { splitCSVLine, eventAppliesToStore, niceMax, formatDate, validateAndIndexSubmission, state };
+  module.exports = {
+    splitCSVLine, eventAppliesToStore, niceMax, formatDate, addDays,
+    validateAndIndexSubmission, scanExceptions, FLAG_TYPES, state,
+  };
 }

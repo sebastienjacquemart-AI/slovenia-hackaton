@@ -273,3 +273,16 @@ dashboard should flag, beyond basic schema validation:
   (possible "false confidence" or "no confidence" outlier).
 - Compare against `predictions_baseline.csv` per row to surface large
   deviations for a human to sanity-check, not to auto-correct.
+
+**v2 shipped (2026-09-10):** `dashboard/app.js`'s `scanExceptions()` now
+runs six of these checks across the full submission (not just the row
+currently on screen) and surfaces them in a filterable, sortable exception
+table above the store×product chart, with a "View" action that jumps the
+chart to that row: monotonicity violations, perishable P95≫P50 spikes,
+promoted days with no forecast lift vs. that series' own non-promo average,
+holiday/pre-holiday days that look like a normal day for that series,
+essential-family (staple-by-`product_family`) rows with a P50 of 0, and
+large deviations from `predictions_baseline.csv`. "Store-product looks
+unusually different from that store's normal behaviour" and duplicate-
+forecast detection ("my shops are not photocopies") are not implemented —
+they'd need a cross-series baseline of "normal" that v1/v2 don't build.
