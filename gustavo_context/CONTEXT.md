@@ -71,6 +71,57 @@ Daily macro indicator: `date, oil_price`.
 - No demographic data available/will be provided — don't infer or assume
   demographics.
 
+**Oil price (`index_oil.csv`) — Sanne, 2026-09-10:**
+- Effect is **lagged**, not a same-day/till event. Sanne expects the impact
+  to show up in baskets months after a sharp oil-price fall, once income
+  and local spending confidence soften — no precise lag figure given, she
+  was explicit about not inventing one.
+- The visible effect is customers **trading down**: smaller basket
+  quantities, less discretionary/premium buying — not a uniform sales drop.
+- Impact likely varies by product family and by store (local customer
+  base / economic exposure), but there's no quantified category×store
+  breakdown available from the team.
+
+**Product risk tiers (staple vs. discretionary) — Gustavo & Olivier, 2026-09-10:**
+- `item_catalogue.csv` has **no** essential/discretionary flag — only
+  `product_family` / `product_class`. The staple-vs-discretionary split
+  below is the team's commercial judgement, not something encoded in the
+  file.
+- **Staples/essentials**: bread and other basic food lines, household
+  cleaning (e.g. detergent), everyday replenishment items.
+- **Discretionary/premium**: wine and other treats, premium versions of
+  ordinary goods, anything customers can easily postpone or trade down
+  from.
+- **Middle ground**: many categories depend on pack size, brand
+  positioning, and the store's customer base — a basic item and a premium
+  version of it can sit in the same `product_family`. Gustavo was clear
+  he can't classify all 500 products precisely from the catalogue alone.
+
+**Under- vs. over-forecast risk asymmetry — Olivier, 2026-09-10:**
+Directly relevant to the P25/P50/P75/P95 quantile task — which tail matters
+more isn't uniform across products/stores:
+- **Protect hardest against under-forecasting** (favor higher quantiles)
+  for: promoted lines (promo already creates demand — empty shelf wastes
+  the promo spend), perishables/fresh (a missed sale is gone, often the
+  whole basket goes with it), staples/high-volume items especially around
+  holidays/payday/local events, large-format stores (higher baseline
+  volume and promo exposure).
+- **Protect harder against over-forecasting** (favor lower quantiles) for:
+  perishables (surplus becomes waste fast — note this cuts *both* ways
+  with the point above: fresh needs a tight band, not just a high one),
+  discretionary goods like wine (more variable demand, excess ties up
+  cash), items in smaller/lower-volume stores, products tied to uncertain
+  local events (don't assume the event will drive footfall).
+- Practical read for Jan: a single symmetric quantile spread per
+  store×product is probably wrong. Fresh + promoted + staple should skew
+  wider/higher; discretionary + low-volume-store should skew tighter/lower.
+
+## External links
+
+- Sanne shared a Google Drive folder (2026-09-10):
+  https://drive.google.com/drive/folders/1euBBwLbm_jl-TPafqiXJeD9603TEqPsJ?usp=drive_link
+  — contents not yet reviewed/downloaded into this repo.
+
 ## Notes for Jan (forecasting)
 
 - These files are keyed on `store_id` / `product_id` / `date`, matching the
@@ -85,3 +136,12 @@ Daily macro indicator: `date, oil_price`.
   `store_id`.
 - Data covers only the 20 highest-volume stores — keep that in mind when
   reasoning about generalization.
+- Oil price is a lagged, indirect signal (trading-down effect, months-long
+  lag) — don't expect it to correlate same-day/same-week with sales; a
+  rolling/lagged transform is more plausible than the raw level.
+- Consider building a simple staple/discretionary tier feature from
+  `is_perishable` + `product_family`/`product_class` (see risk-tier notes
+  above) — no ready-made flag exists, this would need to be engineered.
+- Quantile asymmetry: the "right" spread between P25/P75/P95 probably
+  differs by product/store risk tier (see under/over-forecast notes
+  above) rather than being a fixed offset from P50.
