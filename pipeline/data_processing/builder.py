@@ -104,6 +104,7 @@ OUTPUT_COLUMNS = [
     "department",
     "store_type",
     "store_cluster",
+    "transaction_count",
     "year",
     "month",
     "day",
@@ -430,6 +431,12 @@ def build_dataset(
     frame = base.join(items, on="product_id", how="left", validate="m:1").join(
         stores, on="store_id", how="left", validate="m:1"
     )
+    if "traffic" in sources:
+        frame = frame.join(
+            sources["traffic"], on=["date", "store_id"], how="left", validate="m:1"
+        )
+    else:
+        frame = frame.with_columns(pl.lit(None, dtype=pl.Int32).alias("transaction_count"))
 
     start_date = min(history_stats["min_date"], test_stats["min_date"])
     end_date = max(history_stats["max_date"], test_stats["max_date"])

@@ -60,6 +60,7 @@ def _store() -> list[pl.Expr]:
 def _external() -> list[pl.Expr]:
     numeric = (
         "oil_price",
+        "transaction_count",
         "event_count",
         "effective_event_count",
         "days_until_effective_holiday",

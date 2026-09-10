@@ -56,6 +56,7 @@ CONTEXT_FEATURE_GROUPS = {
         "has_transferred_event",
     ),
     "oil": ("oil_price", "oil_price_source_missing"),
+    "traffic": ("transaction_count",),
 }
 CATEGORICAL_CONTEXT_FEATURES = {
     "store_id",
@@ -123,7 +124,7 @@ def parse_args() -> argparse.Namespace:
         default="sales",
         help=(
             "Comma-separated feature groups. Sales features are always enabled. "
-            "Optional groups: promotion, product, store, calendar, event, oil, or all."
+            "Optional groups: promotion, product, store, calendar, event, oil, traffic, or all."
         ),
     )
     parser.add_argument("--train-days", type=int, default=150)
@@ -213,7 +214,7 @@ def load_context_panel(
             expression = (
                 expression.cast(pl.String).cast(pl.Enum(categories)).to_physical()
             )
-        elif feature == "oil_price":
+        elif feature in {"oil_price", "transaction_count"}:
             expression = expression.fill_null(0)
         expressions.append(expression.cast(pl.Float32).alias(feature))
     frame = (

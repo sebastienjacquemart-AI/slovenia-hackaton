@@ -27,14 +27,14 @@ INPUT_FILES = (
 )
 
 
-def source_paths(data_dir: Path) -> list[Path]:
-    return [data_dir / filename for filename in INPUT_FILES]
+def source_paths(data_dir: Path, context_dir: Path) -> list[Path]:
+    return [data_dir / filename for filename in INPUT_FILES] + [context_dir / "store_traffic.csv"]
 
 
 def build_merged_data(
-    data_dir: Path, output_path: Path, compression: str = "zstd"
+    data_dir: Path, context_dir: Path, output_path: Path, compression: str = "zstd"
 ) -> dict[str, Any]:
-    sources = scan_sources(data_dir)
+    sources = scan_sources(data_dir, context_dir)
     history_stats = validate_panel(
         sources["history"],
         "sales_history.csv",

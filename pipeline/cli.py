@@ -29,6 +29,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-dir", type=Path, default=CHALLENGE_DIR / "data")
     parser.add_argument(
+        "--context-dir", type=Path, default=CHALLENGE_DIR / "gustavo_context"
+    )
+    parser.add_argument(
         "--cache-dir", type=Path, default=CHALLENGE_DIR / ".cache" / "pipeline"
     )
     parser.add_argument(
@@ -61,7 +64,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         stage="stage1_data_processing",
         output_path=merged_path,
         manifest_path=cache_dir / "stage1_manifest.json",
-        inputs=source_paths(args.data_dir),
+        inputs=source_paths(args.data_dir, args.context_dir),
         code_files=[
             cache_code,
             DATA_PROCESSING_DIR / "builder.py",
@@ -73,7 +76,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             PACKAGE_DIR / "stages" / "data_processing.py",
         ],
         parameters={"compression": "zstd"},
-        build=lambda output: build_merged_data(args.data_dir, output),
+        build=lambda output: build_merged_data(args.data_dir, args.context_dir, output),
         force=args.force,
     )
     _display("Stage 1 data processing", hit, metadata)
