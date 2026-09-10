@@ -18,7 +18,20 @@ Calendar events: `date, event_type, scope, location, is_transferred`.
 moved to a different date.
 
 ### `index_oil.csv` (149 rows)
-Daily macro indicator: `date, oil_price`.
+Daily macro indicator: `date, oil_price`. Market-day based (weekends absent)
+and has **6 missing observations** — Gustavo flagged this explicitly, treat
+as a data-quality caveat, not something to silently forward-fill without
+noting it.
+
+### `store_traffic.csv` (3,600 rows, added 2026-09-10)
+Daily footfall per store: `date, store_id, transaction_count`. Same date
+range as `sales_history.csv` (2026-01-11 to 2026-07-09). Useful as a
+denominator/sanity-check: if a store's overall traffic is normal on a day
+one product records zero sales, that argues against a store-wide
+disruption (closure, weather, local event) and toward something
+product-specific (stockout or genuine zero demand for that item) — see the
+store 44 case study below for a worked example. It does **not** by itself
+prove either stockout or zero demand for a single product.
 
 ## Open questions for Gustavo
 
@@ -243,6 +256,50 @@ looks fine:**
 - **Hard rule**: quantiles must be monotonic — `P25 ≤ P50 ≤ P75 ≤ P95` for
   every row. A violation means the forecast contradicts itself.
 
+**Gustavo's consolidated caveat list (2026-09-10)** — sent as "the useful
+caveat list" for the business side; mostly reinforces notes already above,
+kept together here since he framed it as the canonical set:
+1. A zero sale is not proof of zero demand — shelf availability isn't recorded.
+2. Promotion changes the selling situation (placement/signage/price); a
+   promoted zero deserves attention but doesn't prove a failed promo.
+3. Promotions can shift or substitute demand (stock up, buy less after,
+   switch brand/size/tier).
+4. Holidays must be read by date + scope + location — a transferred holiday
+   trades on the transfer date, not the original; a local event doesn't
+   apply to every store.
+5. Payday (3rd/18th, and surrounding days) is operationally visible.
+6. Stores aren't interchangeable — city, format, department, cluster matter;
+   compare like with like.
+7. Products aren't interchangeable — family, class, perishability matter;
+   fresh products have tighter consequences on both shortage and waste.
+8. Oil price is context, not sales — market-day series, weekends absent, 6
+   missing observations.
+9. **The records show outcomes, not explanations** — they can't tell you
+   whether an abnormal result came from weak demand, an empty shelf, a
+   promotion problem, or an operational incident. His words: "The technical
+   interpretation is why you have an analytics team. I run the stores; I do
+   not pretend to be a machine-learning engineer in a cheaper suit."
+
+**Case study — store 44 / product 1473478, 2026-02-08 to 09:** Gustavo
+asked whether this was a stockout or genuine zero demand: sales ran
+~150-200 units/day, dropped to 14.8 on 02-07, hit **0 on both 02-08 and
+02-09**, then recovered (50.5 → 207, the latter a promo day) by 02-11.
+Gustavo's own answer: **cannot confirm from the extracts** — "consistent
+with an availability interruption, but not proof of one... the sales
+history contains no stock-availability or replenishment field." He'd need
+store 44's operational records to establish start/end times.
+- Checked `store_traffic.csv` for store 44 on those dates: transaction
+  counts were 5,316 (02-08) and 3,866 (02-09) — both in line with, and one
+  of them above, the surrounding days (range ~3,600-5,400 across 02-01 to
+  02-15). **The store itself wasn't quiet** — this rules out a store-wide
+  disruption (closure, weather, local event) as the explanation, and points
+  toward something product-specific. It does not distinguish "stockout" from
+  "genuine demand collapse for this one item" — traffic only says people
+  came to the store, not that this product was on the shelf or wanted.
+- Pattern shape (gradual fall 02-05→02-07, two flat zeros, gradual — not
+  instant — recovery 02-10→02-11) is the kind of shape a stockout produces,
+  but as Gustavo said, this is suggestive, not proof.
+
 ## External links
 
 - Sanne shared a Google Drive folder (2026-09-10):
@@ -283,6 +340,10 @@ looks fine:**
 - Quantile outputs must satisfy `P25 ≤ P50 ≤ P75 ≤ P95` per row — Gustavo
   called this out as a hard sanity check, and it's a natural validation
   rule for the dashboard too (see below).
+- `store_traffic.csv` (daily transaction counts per store) is a candidate
+  normalizing feature — e.g. sales-per-transaction, or a same-day-traffic
+  check to help separate a store-wide disruption from a product-specific
+  one (see the store 44 case study above). Not yet used anywhere.
 
 ## Front-end requirements — Sanne relaying Gustavo's ask, 2026-09-10
 
