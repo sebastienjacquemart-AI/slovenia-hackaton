@@ -219,6 +219,12 @@ function parseShapCsv(text) {
   const contribCols = header
     .map((h, i) => ({ h, i }))
     .filter(({ h }) => h.startsWith("contrib_"));
+  // base_value/prediction are the model's own scale (e.g. log1p) — that's
+  // the scale the contrib_ columns are additive in. display_base/
+  // display_prediction are the same two numbers converted to sales units,
+  // for anything shown to a reviewer as "the forecast."
+  const displayBaseIdx = header.indexOf("display_base");
+  const displayPredictionIdx = header.indexOf("display_prediction");
 
   const index = new Map();
   for (let i = 1; i < lines.length; i++) {
@@ -232,7 +238,11 @@ function parseShapCsv(text) {
     contribCols.forEach(({ h, i: colIdx }) => { contribs[h.slice("contrib_".length)] = +f[colIdx]; });
     let byQuantile = index.get(id);
     if (!byQuantile) { byQuantile = new Map(); index.set(id, byQuantile); }
-    byQuantile.set(f[1], { base: +f[2], prediction: +f[3], contribs });
+    byQuantile.set(f[1], {
+      base: +f[2], prediction: +f[3],
+      displayBase: +f[displayBaseIdx], displayPrediction: +f[displayPredictionIdx],
+      contribs,
+    });
   }
   return index;
 }
@@ -1438,7 +1448,7 @@ function renderShapDetail(row) {
     .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
     .slice(0, 4);
 
-  let html = `<strong>${formatDate(row.date)}</strong> — forecast ${Math.round(row.shap.prediction)}, starting point ${Math.round(row.shap.base)}.<br>`;
+  let html = `<strong>${formatDate(row.date)}</strong> — forecast ${Math.round(row.shap.displayPrediction)} units, starting point ${Math.round(row.shap.displayBase)} units.<br>`;
   html += factors.length === 0
     ? "No single factor stands out — the forecast is close to the starting point."
     : "Biggest reasons: " + factors
@@ -1485,8 +1495,8 @@ function showShapTooltip(tooltip, row, left, top) {
     tooltip.appendChild(rowEl);
   }
 
-  addRow(null, "Forecast for this day", Math.round(row.shap.prediction));
-  addRow(null, "Starting point (before adjustments)", Math.round(row.shap.base));
+  addRow(null, "Forecast for this day", Math.round(row.shap.displayPrediction) + " units");
+  addRow(null, "Starting point (before adjustments)", Math.round(row.shap.displayBase) + " units");
   SHAP_BUCKETS
     .map((b) => ({ ...b, v: row.shap.contribs[b.key] || 0 }))
     .filter((b) => Math.abs(b.v) >= 0.05)

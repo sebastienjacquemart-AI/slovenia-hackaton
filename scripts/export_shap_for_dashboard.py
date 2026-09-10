@@ -1,13 +1,17 @@
 """Trim a pipeline.forecast SHAP sidecar (`*.shap.parquet`) into a small CSV
 the dashboard can load in-browser.
 
-The raw sidecar has one row per (id, quantile) and 44 `shap_<feature>`
-columns — too wide/heavy to fetch and parse client-side with no backend and
-no parquet reader. SHAP contributions are additive by construction, so we
-lose nothing by summing them into a handful of domain-meaningful buckets
-that match the feature groups already used throughout this project (see
-gustavo_context/CONTEXT.md) — the bucket values still sum exactly to
-prediction - base_value.
+The raw sidecar has one row per (id, quantile) and one `shap_<feature>`
+column per model feature — too wide/heavy to fetch and parse client-side
+with no backend and no parquet reader. SHAP contributions are additive by
+construction, so we lose nothing by summing them into a handful of
+domain-meaningful buckets that match the feature groups already used
+throughout this project (see gustavo_context/CONTEXT.md) — the bucket
+values still sum exactly to prediction - base_value, both on the model's
+own training scale (e.g. log1p). That is NOT the same scale as the
+submitted forecast (sales units, after inverse-transform and
+postprocessing) — display_base/display_prediction carry that separately,
+for anything shown to a reviewer as "the forecast."
 
 Usage:
     uv run python scripts/export_shap_for_dashboard.py [--shap-parquet PATH] [--output PATH]
@@ -46,7 +50,10 @@ BUCKETS = {
         "shap_store_id", "shap_city", "shap_department", "shap_store_type", "shap_store_cluster",
     ],
     "oil_price": ["shap_oil_price", "shap_oil_price_source_missing"],
-    "traffic": ["shap_transaction_count"],
+    "traffic": [
+        "shap_traffic_lag_1", "shap_traffic_mean_7", "shap_traffic_mean_28",
+        "shap_traffic_ratio_7_28", "shap_traffic_source_missing",
+    ],
 }
 
 
@@ -65,9 +72,36 @@ def main() -> None:
 
     shap_path = args.shap_parquet or find_latest_shap_parquet(Path("pipeline/predictions"))
     schema = pl.scan_parquet(shap_path).collect_schema().names()
-    missing = [col for cols in BUCKETS.values() for col in cols if col not in schema]
+    bucketed = {col for cols in BUCKETS.values() for col in cols}
+    missing = [col for col in bucketed if col not in schema]
     if missing:
         raise ValueError(f"Columns in BUCKETS not found in {shap_path}: {missing}")
+    # A shap_<feature> column outside every bucket would silently break the
+    # additive property (bucket sums must equal prediction - base_value) —
+    # the pipeline's feature set has changed under this script before.
+    uncovered = [c for c in schema if c.startswith("shap_") and c not in bucketed]
+    if uncovered:
+        raise ValueError(f"shap_ columns in {shap_path} not covered by any bucket: {uncovered}")
+
+    # base_value/raw_model_prediction are on the model's own training scale
+    # (e.g. log1p) — that's the scale the shap_<feature> columns are
+    # additive in. submitted_prediction is on sales-unit scale, after the
+    # inverse transform plus postprocessing (negative-value clipping,
+    # quantile-crossing correction), so it does NOT sum with base_value —
+    # a real run showed a >900-unit gap, not floating-point noise. Export
+    # both: base_value/prediction stay in model scale for the additive
+    # breakdown, display_base/display_prediction are the sales-unit numbers
+    # for anything shown to a reviewer as "the forecast."
+    transforms = pl.scan_parquet(shap_path).select("target_transform").unique().collect()["target_transform"].to_list()
+    if len(transforms) != 1:
+        raise ValueError(f"Expected a single target_transform in {shap_path}, found {transforms}")
+    transform = transforms[0]
+    if transform == "log1p":
+        display_base_expr = pl.col("base_value").exp() - 1
+    elif transform in ("none", "identity"):
+        display_base_expr = pl.col("base_value")
+    else:
+        raise ValueError(f"Unhandled target_transform {transform!r} — add inverse-transform handling before trusting display_base")
 
     # Round to 2dp — this is a visualization, not a re-derivation of the model,
     # and unrounded float32 text roughly doubles the file size for no benefit.
@@ -81,7 +115,9 @@ def main() -> None:
             pl.col("id"),
             pl.col("submitted_quantile").alias("quantile"),
             pl.col("base_value").round(2),
-            pl.col("submitted_prediction").round(2).alias("prediction"),
+            pl.col("raw_model_prediction").round(2).alias("prediction"),
+            display_base_expr.round(2).alias("display_base"),
+            pl.col("submitted_prediction").round(2).alias("display_prediction"),
             *bucket_exprs,
         )
         .collect()

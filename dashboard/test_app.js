@@ -5,16 +5,22 @@ const { splitCSVLine, eventAppliesToStore, validateAndIndexSubmission, scanExcep
 
 // SHAP CSV parsing (format written by scripts/export_shap_for_dashboard.py):
 // nested by id -> quantile -> {base, prediction, contribs}, and bucket sums
-// must reproduce prediction - base (that's the whole point of SHAP additivity).
+// must reproduce prediction - base (that's the whole point of SHAP
+// additivity) — but only in the model's own scale (base_value/prediction,
+// e.g. log1p). display_base/display_prediction are the separate sales-unit
+// numbers for human-facing text; they do NOT sum with the contribs (a real
+// pipeline run showed a >900-unit gap when this was gotten wrong).
 const shapCsv = [
-  "id,quantile,base_value,prediction,contrib_sales_trend,contrib_promotion",
-  "t1,0.5,100,150,40,10",
-  "t1,0.25,90,120,20,10",
+  "id,quantile,base_value,prediction,display_base,display_prediction,contrib_sales_trend,contrib_promotion",
+  "t1,0.5,100,150,6.4,345,40,10",
+  "t1,0.25,90,120,5.2,300,20,10",
 ].join("\n");
 const shapIndex = parseShapCsv(shapCsv);
 const t1p50 = shapIndex.get("t1").get("0.5");
 assert.strictEqual(t1p50.base, 100);
 assert.strictEqual(t1p50.prediction, 150);
+assert.strictEqual(t1p50.displayBase, 6.4);
+assert.strictEqual(t1p50.displayPrediction, 345);
 assert.strictEqual(t1p50.contribs.sales_trend, 40);
 assert.strictEqual(t1p50.contribs.promotion, 10);
 assert.strictEqual(t1p50.contribs.sales_trend + t1p50.contribs.promotion, t1p50.prediction - t1p50.base);
