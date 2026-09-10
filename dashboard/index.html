@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Submission Review Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Submission Review Dashboard</h1>
+<p class="subtitle">Load Jan's submission CSV and browse it in context, store × product at a time.</p>
+
+<div class="card row">
+  <div class="field">
+    <label for="fileInput">Submission file (schema: id, sales_count_p25/p50/p75/p95)</label>
+    <input type="file" id="fileInput" accept=".csv">
+  </div>
+  <div id="loadStatus" class="hint"></div>
+</div>
+
+<div class="card" id="validationCard" style="display:none">
+  <div class="status-list" id="validationList"></div>
+</div>
+
+<div class="card row">
+  <div class="field">
+    <label for="storeSelect">Store</label>
+    <select id="storeSelect" disabled><option>Loading…</option></select>
+    <div class="info-panel" id="storeInfo"></div>
+  </div>
+  <div class="field">
+    <label for="productSelect">Product</label>
+    <select id="productSelect" disabled><option>Loading…</option></select>
+    <div class="info-panel" id="productInfo"></div>
+  </div>
+</div>
+
+<div class="card chart-wrap">
+  <svg id="chart" width="820" height="340" viewBox="0 0 820 340"></svg>
+  <div id="tooltip"></div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
