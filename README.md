@@ -112,3 +112,15 @@ If macOS reports that the CLI is not executable, run:
 ```bash
 chmod +x forecasting-participant-cli
 ```
+
+## Training pipeline
+
+The training workflow separates data merging, feature engineering, and model training.
+Run it from this directory:
+
+```bash
+uv run python -m pipeline all
+```
+
+See [`pipeline/README.md`](pipeline/README.md) for stage commands, feature and model
+selection, cache behavior, outputs, and extension points.
